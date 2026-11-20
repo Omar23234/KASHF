@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="112" fill="#070B18"/>
+  <defs>
+    <linearGradient id="kashfGrad" x1="96" y1="96" x2="416" y2="416" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#8B5CF6"/>
+    </linearGradient>
+    <radialGradient id="kashfGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#3B82F6" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="#070B18" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <circle cx="256" cy="256" r="210" fill="url(#kashfGlow)"/>
+  <g transform="translate(236 250) rotate(-12)">
+    <rect x="-92" y="-132" width="184" height="264" rx="22" fill="#101834" stroke="#3B82F6" stroke-width="5" stroke-opacity="0.8"/>
+  </g>
+  <g transform="translate(274 260) rotate(9)">
+    <rect x="-92" y="-132" width="184" height="264" rx="22" fill="#0E132A" stroke="url(#kashfGrad)" stroke-width="6"/>
+    <path d="M0 -56 L42 0 L0 56 L-42 0 Z" fill="url(#kashfGrad)"/>
+    <path d="M0 -30 L20 0 L0 30 L-20 0 Z" fill="#070B18"/>
+  </g>
+</svg>

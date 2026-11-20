@@ -1,0 +1,73 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-ar: 'Cairo', system-ui, -apple-system, sans-serif;
+    --font-en: 'Outfit', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  }
+
+  html {
+    background-color: #060913;
+    color: #f1f5f9;
+    font-family: var(--font-ar);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html[lang="en"] {
+    font-family: var(--font-en);
+  }
+
+  body {
+    min-height: 100dvh;
+    overflow-x: hidden;
+    background-color: #060913;
+  }
+}
+
+.font-mono-tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.pb-safe {
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+
+@keyframes floatSlow {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(18px, -14px, 0) scale(1.04);
+  }
+}
+
+@keyframes floatReverse {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(-16px, 16px, 0) scale(1.05);
+  }
+}
+
+.animate-ambient-1 {
+  animation: floatSlow 14s ease-in-out infinite;
+}
+
+.animate-ambient-2 {
+  animation: floatReverse 18s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-ambient-1,
+  .animate-ambient-2 {
+    animation: none;
+  }
+}

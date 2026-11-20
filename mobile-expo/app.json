@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "KASHF | كَشْف",
+    "slug": "kashf-party-game",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#060913"
+    },
+    "android": {
+      "package": "com.kashf.party",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#060913"
+      },
+      "permissions": [
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "VIBRATE"
+      ]
+    },
+    "plugins": [
+      "expo-localization"
+    ],
+    "extra": {
+      "supportsRTL": true
+    }
+  }
+}

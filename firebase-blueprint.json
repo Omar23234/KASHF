@@ -1,0 +1,214 @@
+{
+  "entities": {
+    "Room": {
+      "title": "Room",
+      "description": "Real-time multiplayer party game room holding turn state, question pool tracking, and configuration.",
+      "type": "object",
+      "properties": {
+        "roomCode": {
+          "type": "string",
+          "description": "Unique 6-character uppercase alphanumeric room identifier.",
+          "minLength": 6,
+          "maxLength": 6,
+          "pattern": "^[A-Z0-9]{6}$"
+        },
+        "hostId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the current room host.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "status": {
+          "type": "string",
+          "description": "Current lifecycle state of the room.",
+          "enum": ["waiting", "playing", "finished", "exhausted", "closed"]
+        },
+        "gameNumber": {
+          "type": "integer",
+          "description": "Monotonically incremented session counter for Play Again resets."
+        },
+        "gameMode": {
+          "type": "string",
+          "description": "Game length mode: rounds (capped at 63 total questions) or all_questions (all 63 questions).",
+          "enum": ["rounds", "all_questions"]
+        },
+        "language": {
+          "type": "string",
+          "description": "Room display language setting.",
+          "enum": ["ar", "en"]
+        },
+        "roundsCount": {
+          "type": "integer",
+          "description": "Configured number of full rounds (1 to 31, capped so players x rounds <= 63)."
+        },
+        "randomFirstPlayer": {
+          "type": "boolean",
+          "description": "Whether the first player order is randomized on game start."
+        },
+        "soundEnabled": {
+          "type": "boolean",
+          "description": "Default sound effects state for the room."
+        },
+        "playerOrder": {
+          "type": "array",
+          "description": "Ordered list of player UIDs participating in the room (max 12)."
+        },
+        "playerCount": {
+          "type": "integer",
+          "description": "Number of active players in the room (0 to 12)."
+        },
+        "currentTurnIndex": {
+          "type": "integer",
+          "description": "Zero-based index into playerOrder for the current active turn."
+        },
+        "currentRound": {
+          "type": "integer",
+          "description": "One-based current round number."
+        },
+        "totalTurnsCompleted": {
+          "type": "integer",
+          "description": "Total turns taken (completed + skipped) in the current game."
+        },
+        "completedQuestionsCount": {
+          "type": "integer",
+          "description": "Number of questions answered normally via Next Question."
+        },
+        "skippedQuestionsCount": {
+          "type": "integer",
+          "description": "Number of questions skipped in the current multiplayer game."
+        },
+        "currentQuestionId": {
+          "type": "integer",
+          "description": "Active official question ID (1 to 63), or null when not playing."
+        },
+        "usedQuestionIds": {
+          "type": "array",
+          "description": "List of official question IDs already drawn in the current game (max 63)."
+        },
+        "activePlayerId": {
+          "type": "string",
+          "description": "UID of the player whose turn it currently is, or null."
+        },
+        "turnNonce": {
+          "type": "integer",
+          "description": "Monotonic counter incremented on every turn transition to block race conditions."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the room was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the last room mutation."
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Expiration timestamp for room cleanup."
+        }
+      },
+      "required": [
+        "roomCode",
+        "hostId",
+        "status",
+        "gameNumber",
+        "language",
+        "roundsCount",
+        "randomFirstPlayer",
+        "soundEnabled",
+        "playerOrder",
+        "playerCount",
+        "currentTurnIndex",
+        "currentRound",
+        "totalTurnsCompleted",
+        "completedQuestionsCount",
+        "skippedQuestionsCount",
+        "usedQuestionIds",
+        "turnNonce",
+        "createdAt",
+        "updatedAt",
+        "expiresAt"
+      ]
+    },
+    "RoomPlayer": {
+      "title": "RoomPlayer",
+      "description": "Player membership document inside a multiplayer room with independent 3-skip quota.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the player.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Player display name.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "avatarColor": {
+          "type": "string",
+          "description": "Gradient palette key for the player avatar.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "isHost": {
+          "type": "boolean",
+          "description": "Whether this player is currently the room host."
+        },
+        "skipsRemaining": {
+          "type": "integer",
+          "description": "Remaining skips for this player in the current game (0 to 3)."
+        },
+        "skipsUsed": {
+          "type": "integer",
+          "description": "Skips consumed by this player in the current game (0 to 3)."
+        },
+        "connected": {
+          "type": "boolean",
+          "description": "Real-time connection presence indicator."
+        },
+        "joinedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the player joined."
+        },
+        "lastSeenAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest presence heartbeat."
+        }
+      },
+      "required": [
+        "uid",
+        "name",
+        "avatarColor",
+        "isHost",
+        "skipsRemaining",
+        "skipsUsed",
+        "connected",
+        "joinedAt",
+        "lastSeenAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/rooms/{roomId}": {
+      "schema": {
+        "$ref": "#/entities/Room"
+      },
+      "description": "Top-level multiplayer game room documents keyed by 6-character roomCode."
+    },
+    "/rooms/{roomId}/players/{playerId}": {
+      "schema": {
+        "$ref": "#/entities/RoomPlayer"
+      },
+      "description": "Per-player membership state and independent 3-skip counters inside a room."
+    }
+  }
+}
