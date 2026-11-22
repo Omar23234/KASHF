@@ -1,22 +1,65 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
-  <rect width="512" height="512" rx="112" fill="#070B18"/>
-  <defs>
-    <linearGradient id="kashfGrad" x1="96" y1="96" x2="416" y2="416" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#3B82F6"/>
-      <stop offset="100%" stop-color="#8B5CF6"/>
-    </linearGradient>
-    <radialGradient id="kashfGlow" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#3B82F6" stop-opacity="0.28"/>
-      <stop offset="100%" stop-color="#070B18" stop-opacity="0"/>
-    </radialGradient>
-  </defs>
-  <circle cx="256" cy="256" r="210" fill="url(#kashfGlow)"/>
-  <g transform="translate(236 250) rotate(-12)">
-    <rect x="-92" y="-132" width="184" height="264" rx="22" fill="#101834" stroke="#3B82F6" stroke-width="5" stroke-opacity="0.8"/>
+  <!-- Warm Off-White Cotton Paper Background -->
+  <rect width="512" height="512" rx="112" fill="#FBF7F0"/>
+  <circle cx="256" cy="256" r="228" fill="#F3EBDD" opacity="0.55"/>
+
+  <!-- Minimal Hand-Drawn Stars & Ink Dots -->
+  <path d="M98 106 C100 118 104 122 116 124 C104 126 100 130 98 142 C96 130 92 126 80 124 C92 122 96 118 98 106 Z" fill="#8B5E3C" opacity="0.85"/>
+  <path d="M416 382 C418 392 421 395 431 397 C421 399 418 402 416 412 C414 402 411 399 401 397 C411 395 414 392 416 382 Z" fill="#8B5E3C" opacity="0.8"/>
+  <path d="M416 104 C417.5 111 420 113.5 427 115 C420 116.5 417.5 119 416 126 C414.5 119 412 116.5 405 115 C412 113.5 414.5 111 416 104 Z" fill="#231A15" opacity="0.5"/>
+  <circle cx="92" cy="382" r="5" fill="#8B5E3C" opacity="0.65"/>
+  <circle cx="116" cy="408" r="3.5" fill="#231A15" opacity="0.4"/>
+
+  <!-- Back Playing Card (Warm Beige, Tilted Left) -->
+  <g transform="translate(226 254) rotate(-11)">
+    <rect x="-126" y="-146" width="252" height="292" rx="28" fill="#EDE3D2" stroke="#231A15" stroke-width="6.5" stroke-linejoin="round"/>
+    <path d="M-98 -108 C-98 -118 -84 -120 -82 -110 C-80 -102 -90 -98 -90 -91" stroke="#8B5E3C" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="-90" cy="-80" r="3.2" fill="#8B5E3C"/>
   </g>
-  <g transform="translate(274 260) rotate(9)">
-    <rect x="-92" y="-132" width="184" height="264" rx="22" fill="#0E132A" stroke="url(#kashfGrad)" stroke-width="6"/>
-    <path d="M0 -56 L42 0 L0 56 L-42 0 Z" fill="url(#kashfGrad)"/>
-    <path d="M0 -30 L20 0 L0 30 L-20 0 Z" fill="#070B18"/>
+
+  <!-- Front Playing Card (Crisp Warm Ivory, Tilted Slightly Right) -->
+  <g transform="translate(272 260) rotate(4.5)">
+    <!-- Soft Warm Shadow -->
+    <rect x="-138" y="-148" width="276" height="304" rx="28" transform="translate(6 10)" fill="#231A15" opacity="0.1"/>
+    <rect x="-138" y="-148" width="276" height="304" rx="28" fill="#FFFDF9" stroke="#231A15" stroke-width="7.5" stroke-linejoin="round"/>
+    <rect x="-120" y="-130" width="240" height="268" rx="18" stroke="#D5C7B2" stroke-width="2.5" stroke-dasharray="10 7"/>
+
+    <!-- Top-Left Hand-Drawn Question Mark -->
+    <path d="M-101 -102 C-101 -113 -85 -115 -83 -104 C-81 -96 -93 -93 -92 -86" stroke="#8B5E3C" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="-92" cy="-75" r="3.4" fill="#8B5E3C"/>
+
+    <!-- Bottom-Right Mirrored Question Mark -->
+    <path d="M100 100 C100 111 84 113 82 102 C80 94 92 91 93 84" stroke="#8B5E3C" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="93" cy="73" r="3.4" fill="#8B5E3C"/>
+
+    <!-- CENTERPIECE: Custom Hand-Drawn Connected Arabic Calligraphy "من غير كلام" HORIZONTALLY MIRRORED -->
+    <!-- Natural RTL range x:[20..220], mirrored around center x=0 via scale(-0.92, 0.92) -->
+    <g transform="translate(106 -112) scale(-0.92, 0.92)">
+      <!-- LINE 1: "من غير" -->
+      <g stroke="#231A15" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" fill="none">
+        <!-- مـ (compact round loop) + ـن (deep Noon bowl) -->
+        <path d="M 206 72 C 219 62, 224 80, 210 86 C 199 90, 192 83, 187 74 C 185 96, 173 110, 154 108 C 141 106, 138 92, 143 80"/>
+        <!-- غـ (distinct open-right hook) + ـيـ (clean tooth) + ـر (graceful downward crescent) -->
+        <path d="M 124 67 C 110 60, 97 68, 106 81 C 110 86, 118 88, 122 89 C 107 91, 93 91, 84 90 C 78 90, 74 82, 71 76 C 68 84, 62 90, 52 90 C 46 90, 44 86, 42 82 C 42 98, 32 114, 14 118"/>
+      </g>
+      <!-- Dots for Line 1 -->
+      <g fill="#231A15">
+        <circle cx="163" cy="64" r="6.5"/>
+        <circle cx="111" cy="46" r="6.5"/>
+        <circle cx="77" cy="110" r="5.8"/>
+        <circle cx="62" cy="110" r="5.8"/>
+      </g>
+
+      <!-- LINE 2: "كلام" -->
+      <g stroke="#231A15" stroke-width="14.5" stroke-linecap="round" stroke-linejoin="round" fill="none">
+        <!-- كـ (bold slanted top stroke + sharp turn into connected baseline) -->
+        <path d="M 212 132 L 178 147 L 200 163 C 204 174, 193 182, 178 182 L 156 182"/>
+        <!-- ـلا (tall Lam stem + broad rounded Lam-Alif cradle + clear tall Alif stroke) -->
+        <path d="M 156 124 L 156 172 C 156 186, 134 188, 121 180 C 112 174, 111 163, 117 154"/>
+        <path d="M 122 124 L 146 181"/>
+        <!-- م (compact Meem head loop + straight descending tail) -->
+        <path d="M 94 172 C 96 161, 80 158, 76 168 C 73 176, 84 182, 93 179 C 81 180, 75 186, 75 218"/>
+      </g>
+    </g>
   </g>
 </svg>

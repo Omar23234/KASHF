@@ -38,6 +38,21 @@ service cloud.firestore {
       return exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid));
     }
 
+    function isValidLastCardEvent(evt) {
+      return evt == null || (
+        evt is map
+        && evt.keys().hasAll(['nonce', 'type', 'cardId', 'actorUid', 'actorName', 'targetUid', 'targetName'])
+        && evt.keys().hasOnly(['nonce', 'type', 'cardId', 'actorUid', 'actorName', 'targetUid', 'targetName'])
+        && evt.nonce is int && evt.nonce >= 1
+        && evt.type in ['awarded', 'gold', 'switch', 'anti_switch']
+        && evt.cardId is string && evt.cardId.size() >= 1 && evt.cardId.size() <= 32
+        && isValidId(evt.actorUid)
+        && evt.actorName is string && evt.actorName.size() >= 1 && evt.actorName.size() <= 24
+        && (evt.targetUid == null || isValidId(evt.targetUid))
+        && (evt.targetName == null || (evt.targetName is string && evt.targetName.size() >= 1 && evt.targetName.size() <= 24))
+      );
+    }
+
     // Validation Blueprint: Room
     function isValidRoom(data) {
       return data.keys().hasAll([
@@ -45,16 +60,20 @@ service cloud.firestore {
           'roundsCount', 'randomFirstPlayer', 'soundEnabled', 'playerOrder',
           'playerCount', 'currentTurnIndex', 'currentRound', 'totalTurnsCompleted',
           'completedQuestionsCount', 'skippedQuestionsCount', 'currentQuestionId',
-          'usedQuestionIds', 'activePlayerId', 'turnNonce', 'createdAt',
-          'updatedAt', 'expiresAt'
+          'usedQuestionIds', 'activePlayerId', 'turnNonce',
+          'turnQuestionsRemaining', 'turnMode', 'switchSourceId', 'switchTargetId',
+          'availableSpecialCards', 'awardedCardIds', 'lastCardEvent',
+          'createdAt', 'updatedAt', 'expiresAt'
         ])
         && data.keys().hasOnly([
           'roomCode', 'hostId', 'status', 'gameNumber', 'gameMode', 'language',
           'roundsCount', 'randomFirstPlayer', 'soundEnabled', 'playerOrder',
           'playerCount', 'currentTurnIndex', 'currentRound', 'totalTurnsCompleted',
           'completedQuestionsCount', 'skippedQuestionsCount', 'currentQuestionId',
-          'usedQuestionIds', 'activePlayerId', 'turnNonce', 'createdAt',
-          'updatedAt', 'expiresAt'
+          'usedQuestionIds', 'activePlayerId', 'turnNonce',
+          'turnQuestionsRemaining', 'turnMode', 'switchSourceId', 'switchTargetId',
+          'availableSpecialCards', 'awardedCardIds', 'lastCardEvent',
+          'createdAt', 'updatedAt', 'expiresAt'
         ])
         && isValidRoomCode(data.roomCode)
         && isValidId(data.hostId)
@@ -78,6 +97,14 @@ service cloud.firestore {
         && (data.usedQuestionIds.size() == 0 || data.usedQuestionIds[0] is int)
         && (data.activePlayerId == null || isValidId(data.activePlayerId))
         && data.turnNonce is int && data.turnNonce >= 0 && data.turnNonce <= 100000
+        && data.turnQuestionsRemaining is int && data.turnQuestionsRemaining >= 1 && data.turnQuestionsRemaining <= 2
+        && data.turnMode in ['normal', 'switch_pending', 'anti_switch_forced']
+        && (data.switchSourceId == null || isValidId(data.switchSourceId))
+        && (data.switchTargetId == null || isValidId(data.switchTargetId))
+        && data.availableSpecialCards is list && data.availableSpecialCards.size() >= 0 && data.availableSpecialCards.size() <= 5
+        && data.awardedCardIds is list && data.awardedCardIds.size() >= 0 && data.awardedCardIds.size() <= 5
+        && (data.availableSpecialCards.size() + data.awardedCardIds.size() <= 5)
+        && isValidLastCardEvent(data.lastCardEvent)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp
         && data.expiresAt is timestamp;
@@ -86,23 +113,70 @@ service cloud.firestore {
     // Validation Blueprint: RoomPlayer
     function isValidPlayer(data) {
       return data.keys().hasAll([
-          'uid', 'name', 'avatarColor', 'isHost', 'skipsRemaining',
-          'skipsUsed', 'connected', 'joinedAt', 'lastSeenAt'
+          'uid', 'name', 'avatarColor', 'isHost', 'score', 'skipsRemaining',
+          'skipsUsed', 'pendingDoubleTurn', 'doublePenaltyUsed',
+          'goldCards', 'switchCards', 'antiSwitchCards',
+          'voiceJoined', 'micMuted', 'connected', 'joinedAt', 'lastSeenAt'
         ])
         && data.keys().hasOnly([
-          'uid', 'name', 'avatarColor', 'isHost', 'skipsRemaining',
-          'skipsUsed', 'connected', 'joinedAt', 'lastSeenAt'
+          'uid', 'name', 'avatarColor', 'isHost', 'score', 'skipsRemaining',
+          'skipsUsed', 'pendingDoubleTurn', 'doublePenaltyUsed',
+          'goldCards', 'switchCards', 'antiSwitchCards',
+          'voiceJoined', 'micMuted', 'connected', 'joinedAt', 'lastSeenAt'
         ])
         && isValidId(data.uid)
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 24
         && data.avatarColor is string && data.avatarColor.size() >= 1 && data.avatarColor.size() <= 24
         && data.isHost is bool
+        && data.score is int && data.score >= -1000 && data.score <= 1000
         && data.skipsRemaining is int && data.skipsRemaining >= 0 && data.skipsRemaining <= 3
         && data.skipsUsed is int && data.skipsUsed >= 0 && data.skipsUsed <= 3
         && (data.skipsRemaining + data.skipsUsed == 3)
+        && data.pendingDoubleTurn is bool
+        && data.doublePenaltyUsed is bool
+        && data.goldCards is int && data.goldCards >= 0 && data.goldCards <= 2
+        && data.switchCards is int && data.switchCards >= 0 && data.switchCards <= 2
+        && data.antiSwitchCards is int && data.antiSwitchCards >= 0 && data.antiSwitchCards <= 1
+        && data.voiceJoined is bool
+        && data.micMuted is bool
         && data.connected is bool
         && data.joinedAt is timestamp
         && data.lastSeenAt is timestamp;
+    }
+
+    function isValidCardAwardChange() {
+      return (
+        incoming().availableSpecialCards == existing().availableSpecialCards
+        && incoming().awardedCardIds == existing().awardedCardIds
+      ) || (
+        existing().availableSpecialCards.size() >= 1
+        && incoming().availableSpecialCards.size() == existing().availableSpecialCards.size() - 1
+        && existing().availableSpecialCards.hasAll(incoming().availableSpecialCards)
+        && incoming().awardedCardIds.size() == existing().awardedCardIds.size() + 1
+        && incoming().awardedCardIds.hasAll(existing().awardedCardIds)
+        && incoming().lastCardEvent != null
+        && incoming().lastCardEvent.type == 'awarded'
+        && incoming().lastCardEvent.nonce == incoming().turnNonce
+      );
+    }
+
+    function isValidNextQuestionState() {
+      return (
+        incoming().status == 'playing'
+        && incoming().currentQuestionId is int
+        && incoming().currentQuestionId >= 1 && incoming().currentQuestionId <= 63
+        && !(incoming().currentQuestionId in existing().usedQuestionIds)
+        && incoming().currentQuestionId in incoming().usedQuestionIds
+        && incoming().usedQuestionIds.hasAll(existing().usedQuestionIds)
+        && incoming().usedQuestionIds.size() == existing().usedQuestionIds.size() + 1
+        && incoming().currentTurnIndex < existing().playerOrder.size()
+        && incoming().activePlayerId == existing().playerOrder[incoming().currentTurnIndex]
+      )
+      || (
+        incoming().status in ['finished', 'exhausted']
+        && incoming().currentQuestionId == null
+        && incoming().activePlayerId == null
+      );
     }
 
     // Room Update Action Helpers
@@ -128,7 +202,9 @@ service cloud.firestore {
         && existing().playerOrder.hasAll(incoming().playerOrder)
         && incoming().playerCount == existing().playerCount - 1
         && incoming().diff(existing()).affectedKeys().hasOnly([
-          'playerOrder', 'playerCount', 'currentTurnIndex', 'activePlayerId', 'currentQuestionId', 'turnNonce', 'status', 'updatedAt'
+          'playerOrder', 'playerCount', 'currentTurnIndex', 'activePlayerId',
+          'currentQuestionId', 'turnQuestionsRemaining', 'turnMode',
+          'switchSourceId', 'switchTargetId', 'turnNonce', 'status', 'updatedAt'
         ])
         && !existsAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid));
     }
@@ -171,6 +247,8 @@ service cloud.firestore {
           'status', 'gameNumber', 'gameMode', 'playerOrder', 'currentTurnIndex', 'currentRound',
           'totalTurnsCompleted', 'completedQuestionsCount', 'skippedQuestionsCount',
           'currentQuestionId', 'usedQuestionIds', 'activePlayerId', 'turnNonce',
+          'turnQuestionsRemaining', 'turnMode', 'switchSourceId', 'switchTargetId',
+          'availableSpecialCards', 'awardedCardIds', 'lastCardEvent',
           'roundsCount', 'randomFirstPlayer', 'language', 'soundEnabled', 'updatedAt'
         ])
         && incoming().currentRound == 1
@@ -184,6 +262,13 @@ service cloud.firestore {
         && incoming().usedQuestionIds[0] == incoming().currentQuestionId
         && incoming().activePlayerId == incoming().playerOrder[0]
         && incoming().turnNonce == existing().turnNonce + 1
+        && incoming().turnQuestionsRemaining == 1
+        && incoming().turnMode == 'normal'
+        && incoming().switchSourceId == null
+        && incoming().switchTargetId == null
+        && incoming().availableSpecialCards.size() == 5
+        && incoming().awardedCardIds.size() == 0
+        && incoming().lastCardEvent == null
         && (
           (existing().status == 'waiting' && incoming().gameNumber == existing().gameNumber)
           || (existing().status in ['finished', 'exhausted'] && incoming().gameNumber == existing().gameNumber + 1)
@@ -196,35 +281,30 @@ service cloud.firestore {
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'status', 'currentTurnIndex', 'currentRound', 'totalTurnsCompleted',
           'completedQuestionsCount', 'currentQuestionId', 'usedQuestionIds',
-          'activePlayerId', 'turnNonce', 'updatedAt'
+          'activePlayerId', 'turnNonce', 'turnQuestionsRemaining',
+          'turnMode', 'switchSourceId', 'switchTargetId',
+          'availableSpecialCards', 'awardedCardIds', 'lastCardEvent', 'updatedAt'
         ])
         && incoming().turnNonce == existing().turnNonce + 1
         && incoming().completedQuestionsCount == existing().completedQuestionsCount + 1
         && incoming().totalTurnsCompleted == existing().totalTurnsCompleted + 1
+        && incoming().turnMode == 'normal'
+        && incoming().switchSourceId == null
+        && incoming().switchTargetId == null
         && incoming().status in ['playing', 'finished', 'exhausted']
-        && (
-          (
-            incoming().status == 'playing'
-            && incoming().currentQuestionId is int
-            && incoming().currentQuestionId >= 1 && incoming().currentQuestionId <= 63
-            && !(incoming().currentQuestionId in existing().usedQuestionIds)
-            && incoming().currentQuestionId in incoming().usedQuestionIds
-            && incoming().usedQuestionIds.hasAll(existing().usedQuestionIds)
-            && incoming().usedQuestionIds.size() == existing().usedQuestionIds.size() + 1
-            && incoming().currentTurnIndex < existing().playerOrder.size()
-            && incoming().activePlayerId == existing().playerOrder[incoming().currentTurnIndex]
-          )
-          || (incoming().status in ['finished', 'exhausted'] && incoming().currentQuestionId == null && incoming().activePlayerId == null)
-        );
+        && isValidCardAwardChange()
+        && isValidNextQuestionState();
     }
 
     function isSkipQuestionAction(roomId) {
       return existing().status == 'playing'
+        && existing().turnMode == 'normal'
         && request.auth.uid == existing().activePlayerId
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'status', 'currentTurnIndex', 'currentRound', 'totalTurnsCompleted',
           'skippedQuestionsCount', 'currentQuestionId', 'usedQuestionIds',
-          'activePlayerId', 'turnNonce', 'updatedAt'
+          'activePlayerId', 'turnNonce', 'turnQuestionsRemaining',
+          'availableSpecialCards', 'awardedCardIds', 'lastCardEvent', 'updatedAt'
         ])
         && incoming().turnNonce == existing().turnNonce + 1
         && incoming().skippedQuestionsCount == existing().skippedQuestionsCount + 1
@@ -233,27 +313,85 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.skipsRemaining >= 1
         && getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.skipsRemaining
           == get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.skipsRemaining - 1
-        && (
-          (
-            incoming().status == 'playing'
-            && incoming().currentQuestionId is int
-            && incoming().currentQuestionId >= 1 && incoming().currentQuestionId <= 63
-            && !(incoming().currentQuestionId in existing().usedQuestionIds)
-            && incoming().currentQuestionId in incoming().usedQuestionIds
-            && incoming().usedQuestionIds.hasAll(existing().usedQuestionIds)
-            && incoming().usedQuestionIds.size() == existing().usedQuestionIds.size() + 1
-            && incoming().currentTurnIndex < existing().playerOrder.size()
-            && incoming().activePlayerId == existing().playerOrder[incoming().currentTurnIndex]
-          )
-          || (incoming().status in ['finished', 'exhausted'] && incoming().currentQuestionId == null && incoming().activePlayerId == null)
-        );
+        && getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.score
+          == get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.score - 3
+        && isValidCardAwardChange()
+        && isValidNextQuestionState();
+    }
+
+    function isUseGoldCardAction(roomId) {
+      return existing().status == 'playing'
+        && existing().turnMode == 'normal'
+        && request.auth.uid == existing().activePlayerId
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'currentTurnIndex', 'currentRound', 'totalTurnsCompleted',
+          'currentQuestionId', 'usedQuestionIds', 'activePlayerId', 'turnNonce',
+          'turnQuestionsRemaining', 'availableSpecialCards', 'awardedCardIds',
+          'lastCardEvent', 'updatedAt'
+        ])
+        && incoming().turnNonce == existing().turnNonce + 1
+        && incoming().totalTurnsCompleted == existing().totalTurnsCompleted + 1
+        && incoming().status in ['playing', 'finished', 'exhausted']
+        && get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.goldCards >= 1
+        && getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.goldCards
+          == get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.goldCards - 1
+        && getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.score
+          == get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.score
+        && isValidCardAwardChange()
+        && isValidNextQuestionState();
+    }
+
+    function isUseSwitchCardAction(roomId) {
+      return existing().status == 'playing'
+        && existing().turnMode == 'normal'
+        && request.auth.uid == existing().activePlayerId
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'turnMode', 'switchSourceId', 'switchTargetId', 'activePlayerId',
+          'turnNonce', 'lastCardEvent', 'updatedAt'
+        ])
+        && incoming().status == 'playing'
+        && incoming().turnMode == 'switch_pending'
+        && incoming().switchSourceId == request.auth.uid
+        && incoming().switchTargetId != null
+        && incoming().switchTargetId != request.auth.uid
+        && incoming().switchTargetId in existing().playerOrder
+        && incoming().activePlayerId == incoming().switchTargetId
+        && incoming().turnNonce == existing().turnNonce + 1
+        && incoming().lastCardEvent != null
+        && incoming().lastCardEvent.type == 'switch'
+        && incoming().lastCardEvent.nonce == incoming().turnNonce
+        && get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.switchCards >= 1
+        && getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.switchCards
+          == get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.switchCards - 1;
+    }
+
+    function isUseAntiSwitchCardAction(roomId) {
+      return existing().status == 'playing'
+        && existing().turnMode == 'switch_pending'
+        && request.auth.uid == existing().switchTargetId
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'turnMode', 'switchTargetId', 'activePlayerId', 'turnNonce', 'lastCardEvent', 'updatedAt'
+        ])
+        && incoming().status == 'playing'
+        && incoming().turnMode == 'anti_switch_forced'
+        && incoming().switchTargetId == null
+        && incoming().activePlayerId == existing().switchSourceId
+        && incoming().turnNonce == existing().turnNonce + 1
+        && incoming().lastCardEvent != null
+        && incoming().lastCardEvent.type == 'anti_switch'
+        && incoming().lastCardEvent.nonce == incoming().turnNonce
+        && get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.antiSwitchCards >= 1
+        && getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.antiSwitchCards
+          == get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.antiSwitchCards - 1;
     }
 
     function isTransferHostAction(roomId) {
       return existing().status != 'closed'
         && request.auth.uid in existing().playerOrder
         && incoming().diff(existing()).affectedKeys().hasOnly([
-          'hostId', 'playerOrder', 'playerCount', 'currentTurnIndex', 'activePlayerId', 'currentQuestionId', 'turnNonce', 'status', 'updatedAt'
+          'hostId', 'playerOrder', 'playerCount', 'currentTurnIndex', 'activePlayerId',
+          'currentQuestionId', 'turnQuestionsRemaining', 'turnMode',
+          'switchSourceId', 'switchTargetId', 'turnNonce', 'status', 'updatedAt'
         ])
         && incoming().hostId in incoming().playerOrder
         && incoming().hostId != existing().hostId
@@ -303,6 +441,13 @@ service cloud.firestore {
         && incoming().usedQuestionIds.size() == 0
         && incoming().activePlayerId == null
         && incoming().turnNonce == 0
+        && incoming().turnQuestionsRemaining == 1
+        && incoming().turnMode == 'normal'
+        && incoming().switchSourceId == null
+        && incoming().switchTargetId == null
+        && incoming().availableSpecialCards.size() == 0
+        && incoming().awardedCardIds.size() == 0
+        && incoming().lastCardEvent == null
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
         && incoming().expiresAt > request.time
@@ -323,6 +468,9 @@ service cloud.firestore {
           || isHostStartOrRestartGameAction()
           || isNextQuestionAction()
           || isSkipQuestionAction(roomId)
+          || isUseGoldCardAction(roomId)
+          || isUseSwitchCardAction(roomId)
+          || isUseAntiSwitchCardAction(roomId)
           || isTransferHostAction(roomId)
           || isCloseRoomAction()
         );
@@ -342,8 +490,16 @@ service cloud.firestore {
           && playerId == request.auth.uid
           && isValidPlayer(incoming())
           && incoming().uid == request.auth.uid
+          && incoming().score == 0
           && incoming().skipsRemaining == 3
           && incoming().skipsUsed == 0
+          && incoming().pendingDoubleTurn == false
+          && incoming().doublePenaltyUsed == false
+          && incoming().goldCards == 0
+          && incoming().switchCards == 0
+          && incoming().antiSwitchCards == 0
+          && incoming().voiceJoined == false
+          && incoming().micMuted == false
           && incoming().joinedAt == request.time
           && incoming().lastSeenAt == request.time
           && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'waiting'
@@ -360,32 +516,155 @@ service cloud.firestore {
           && incoming().uid == existing().uid
           && incoming().joinedAt == existing().joinedAt
           && (
-            // Heartbeat / Reconnect
+            // Heartbeat / Reconnect / Voice status
             (
               playerId == request.auth.uid
-              && incoming().diff(existing()).affectedKeys().hasOnly(['connected', 'lastSeenAt'])
+              && incoming().diff(existing()).affectedKeys().hasOnly(['connected', 'voiceJoined', 'micMuted', 'lastSeenAt'])
               && incoming().lastSeenAt == request.time
             )
             ||
-            // Atomic Skip Deduction (Strictly bound to room turn advancement)
+            // Answering active player (+1 score, and optionally receiving 1 random card if staying active)
+            (
+              (playerId == request.auth.uid || get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid)
+              && get(/databases/$(database)/documents/rooms/$(roomId)).data.activePlayerId == playerId
+              && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.turnNonce
+                == get(/databases/$(database)/documents/rooms/$(roomId)).data.turnNonce + 1
+              && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.completedQuestionsCount
+                == get(/databases/$(database)/documents/rooms/$(roomId)).data.completedQuestionsCount + 1
+              && incoming().score == existing().score + 1
+              && incoming().diff(existing()).affectedKeys().hasOnly([
+                'score', 'goldCards', 'switchCards', 'antiSwitchCards', 'lastSeenAt'
+              ])
+              && (
+                (
+                  incoming().goldCards == existing().goldCards
+                  && incoming().switchCards == existing().switchCards
+                  && incoming().antiSwitchCards == existing().antiSwitchCards
+                )
+                || (
+                  (incoming().goldCards + incoming().switchCards + incoming().antiSwitchCards)
+                    == (existing().goldCards + existing().switchCards + existing().antiSwitchCards + 1)
+                  && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.awardedCardIds.size()
+                    == get(/databases/$(database)/documents/rooms/$(roomId)).data.awardedCardIds.size() + 1
+                  && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.lastCardEvent.type == 'awarded'
+                  && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.lastCardEvent.actorUid == playerId
+                )
+              )
+            )
+            ||
+            // Atomic Skip Deduction (-3 score, skips -1, 3rd skip arms double turn)
             (
               playerId == request.auth.uid
               && existing().skipsRemaining >= 1
               && incoming().skipsRemaining == existing().skipsRemaining - 1
               && incoming().skipsUsed == existing().skipsUsed + 1
-              && incoming().diff(existing()).affectedKeys().hasOnly(['skipsRemaining', 'skipsUsed', 'lastSeenAt'])
+              && incoming().score == existing().score - 3
+              && incoming().pendingDoubleTurn == (
+                (incoming().skipsUsed == 3 && !existing().doublePenaltyUsed) ? true : existing().pendingDoubleTurn
+              )
+              && incoming().diff(existing()).affectedKeys().hasOnly([
+                'skipsRemaining', 'skipsUsed', 'score', 'pendingDoubleTurn', 'lastSeenAt'
+              ])
+              && incoming().lastSeenAt == request.time
+              && get(/databases/$(database)/documents/rooms/$(roomId)).data.activePlayerId == request.auth.uid
+              && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.turnNonce
+                == get(/databases/$(database)/documents/rooms/$(roomId)).data.turnNonce + 1
+              && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.skippedQuestionsCount
+                == get(/databases/$(database)/documents/rooms/$(roomId)).data.skippedQuestionsCount + 1
+            )
+            ||
+            // Gold Card Use (goldCards - 1, 0 score change)
+            (
+              playerId == request.auth.uid
+              && existing().goldCards >= 1
+              && incoming().goldCards == existing().goldCards - 1
+              && incoming().diff(existing()).affectedKeys().hasOnly(['goldCards', 'lastSeenAt'])
               && incoming().lastSeenAt == request.time
               && get(/databases/$(database)/documents/rooms/$(roomId)).data.activePlayerId == request.auth.uid
               && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.turnNonce
                 == get(/databases/$(database)/documents/rooms/$(roomId)).data.turnNonce + 1
             )
             ||
-            // Host resets skips for Play Again
+            // Switch Card Use (switchCards - 1)
+            (
+              playerId == request.auth.uid
+              && existing().switchCards >= 1
+              && incoming().switchCards == existing().switchCards - 1
+              && incoming().diff(existing()).affectedKeys().hasOnly(['switchCards', 'lastSeenAt'])
+              && incoming().lastSeenAt == request.time
+              && get(/databases/$(database)/documents/rooms/$(roomId)).data.activePlayerId == request.auth.uid
+              && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.turnMode == 'switch_pending'
+              && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.turnNonce
+                == get(/databases/$(database)/documents/rooms/$(roomId)).data.turnNonce + 1
+            )
+            ||
+            // Anti-Switch Card Use (antiSwitchCards - 1)
+            (
+              playerId == request.auth.uid
+              && existing().antiSwitchCards >= 1
+              && incoming().antiSwitchCards == existing().antiSwitchCards - 1
+              && incoming().diff(existing()).affectedKeys().hasOnly(['antiSwitchCards', 'lastSeenAt'])
+              && incoming().lastSeenAt == request.time
+              && get(/databases/$(database)/documents/rooms/$(roomId)).data.switchTargetId == request.auth.uid
+              && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.turnMode == 'anti_switch_forced'
+              && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.turnNonce
+                == get(/databases/$(database)/documents/rooms/$(roomId)).data.turnNonce + 1
+            )
+            ||
+            // Next incoming player receiving 1 random card reward and/or activating 1-time double penalty
+            (
+              (
+                get(/databases/$(database)/documents/rooms/$(roomId)).data.activePlayerId == request.auth.uid
+                || get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid
+              )
+              && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.activePlayerId == playerId
+              && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.turnNonce
+                == get(/databases/$(database)/documents/rooms/$(roomId)).data.turnNonce + 1
+              && incoming().diff(existing()).affectedKeys().hasOnly([
+                'goldCards', 'switchCards', 'antiSwitchCards', 'pendingDoubleTurn', 'doublePenaltyUsed'
+              ])
+              && (
+                (
+                  incoming().goldCards == existing().goldCards
+                  && incoming().switchCards == existing().switchCards
+                  && incoming().antiSwitchCards == existing().antiSwitchCards
+                )
+                || (
+                  (incoming().goldCards + incoming().switchCards + incoming().antiSwitchCards)
+                    == (existing().goldCards + existing().switchCards + existing().antiSwitchCards + 1)
+                  && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.awardedCardIds.size()
+                    == get(/databases/$(database)/documents/rooms/$(roomId)).data.awardedCardIds.size() + 1
+                  && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.lastCardEvent.type == 'awarded'
+                  && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.lastCardEvent.actorUid == playerId
+                )
+              )
+              && (
+                (incoming().pendingDoubleTurn == existing().pendingDoubleTurn && incoming().doublePenaltyUsed == existing().doublePenaltyUsed)
+                || (
+                  existing().pendingDoubleTurn == true
+                  && existing().doublePenaltyUsed == false
+                  && incoming().pendingDoubleTurn == false
+                  && incoming().doublePenaltyUsed == true
+                  && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.turnQuestionsRemaining == 2
+                )
+              )
+            )
+            ||
+            // Host resets player game stats for Play Again
             (
               get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid
+              && incoming().score == 0
               && incoming().skipsRemaining == 3
               && incoming().skipsUsed == 0
-              && incoming().diff(existing()).affectedKeys().hasOnly(['skipsRemaining', 'skipsUsed'])
+              && incoming().pendingDoubleTurn == false
+              && incoming().doublePenaltyUsed == false
+              && incoming().goldCards == 0
+              && incoming().switchCards == 0
+              && incoming().antiSwitchCards == 0
+              && incoming().diff(existing()).affectedKeys().hasOnly([
+                'score', 'skipsRemaining', 'skipsUsed', 'pendingDoubleTurn',
+                'doublePenaltyUsed', 'goldCards', 'switchCards', 'antiSwitchCards'
+              ])
               && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.gameNumber
                 == get(/databases/$(database)/documents/rooms/$(roomId)).data.gameNumber + 1
             )
@@ -408,6 +687,60 @@ service cloud.firestore {
             || get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid
           )
           && !(playerId in getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.playerOrder);
+      }
+
+      // Room-Scoped Real-Time Text Chat
+      match /messages/{messageId} {
+        allow get: if isSignedIn()
+          && isValidRoomCode(roomId)
+          && isRoomMember(roomId);
+        allow list: if isSignedIn()
+          && isValidRoomCode(roomId)
+          && request.auth.uid in resource.data.memberIds;
+
+        allow create: if isSignedIn()
+          && isValidRoomCode(roomId)
+          && isRoomMember(roomId)
+          && incoming().keys().hasAll(['senderId', 'senderName', 'text', 'memberIds', 'createdAt'])
+          && incoming().keys().hasOnly(['senderId', 'senderName', 'text', 'memberIds', 'createdAt'])
+          && incoming().senderId == request.auth.uid
+          && incoming().senderName is string && incoming().senderName.size() >= 1 && incoming().senderName.size() <= 24
+          && incoming().text is string && incoming().text.size() >= 1 && incoming().text.size() <= 500
+          && incoming().memberIds is list && incoming().memberIds.size() >= 1 && incoming().memberIds.size() <= 12
+          && request.auth.uid in incoming().memberIds
+          && incoming().createdAt == request.time;
+
+        allow update, delete: if false;
+      }
+
+      // Ephemeral WebRTC Voice Signaling (SDP & ICE only - zero audio stored)
+      match /voiceSignals/{signalId} {
+        allow get: if isSignedIn()
+          && isValidRoomCode(roomId)
+          && isRoomMember(roomId)
+          && (existing().toUid == request.auth.uid || existing().fromUid == request.auth.uid);
+        allow list: if isSignedIn()
+          && isValidRoomCode(roomId)
+          && (resource.data.toUid == request.auth.uid || resource.data.fromUid == request.auth.uid);
+
+        allow create: if isSignedIn()
+          && isValidRoomCode(roomId)
+          && isRoomMember(roomId)
+          && incoming().keys().hasAll(['fromUid', 'toUid', 'type', 'payload', 'createdAt'])
+          && incoming().keys().hasOnly(['fromUid', 'toUid', 'type', 'payload', 'createdAt'])
+          && incoming().fromUid == request.auth.uid
+          && isValidId(incoming().toUid)
+          && incoming().toUid != request.auth.uid
+          && exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(incoming().toUid))
+          && incoming().type in ['offer', 'answer', 'ice']
+          && incoming().payload is string && incoming().payload.size() >= 2 && incoming().payload.size() <= 16384
+          && incoming().createdAt == request.time;
+
+        allow update: if false;
+
+        allow delete: if isSignedIn()
+          && isValidRoomCode(roomId)
+          && (existing().toUid == request.auth.uid || existing().fromUid == request.auth.uid);
       }
     }
   }

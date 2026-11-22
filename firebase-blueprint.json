@@ -2,7 +2,7 @@
   "entities": {
     "Room": {
       "title": "Room",
-      "description": "Real-time multiplayer party game room holding turn state, question pool tracking, and configuration.",
+      "description": "Real-time multiplayer party game room holding turn state, question pool tracking, special card deck state, switch/double-turn state, and configuration.",
       "type": "object",
       "properties": {
         "roomCode": {
@@ -60,7 +60,7 @@
         },
         "currentTurnIndex": {
           "type": "integer",
-          "description": "Zero-based index into playerOrder for the current active turn."
+          "description": "Zero-based index into playerOrder for the current base turn."
         },
         "currentRound": {
           "type": "integer",
@@ -68,11 +68,11 @@
         },
         "totalTurnsCompleted": {
           "type": "integer",
-          "description": "Total turns taken (completed + skipped) in the current game."
+          "description": "Total question turns resolved in the current game."
         },
         "completedQuestionsCount": {
           "type": "integer",
-          "description": "Number of questions answered normally via Next Question."
+          "description": "Number of questions answered normally or via Switch/Anti-Switch."
         },
         "skippedQuestionsCount": {
           "type": "integer",
@@ -88,11 +88,40 @@
         },
         "activePlayerId": {
           "type": "string",
-          "description": "UID of the player whose turn it currently is, or null."
+          "description": "UID of the player currently answering or acting, or null."
         },
         "turnNonce": {
           "type": "integer",
-          "description": "Monotonic counter incremented on every turn transition to block race conditions."
+          "description": "Monotonic counter incremented on every turn or card transition."
+        },
+        "turnQuestionsRemaining": {
+          "type": "integer",
+          "description": "Consecutive questions left in the current player's turn (1 normally, 2 on 3rd-skip penalty)."
+        },
+        "turnMode": {
+          "type": "string",
+          "description": "Current turn resolution mode.",
+          "enum": ["normal", "switch_pending", "anti_switch_forced"]
+        },
+        "switchSourceId": {
+          "type": "string",
+          "description": "UID of player who played a Switch Card on the current question, or null."
+        },
+        "switchTargetId": {
+          "type": "string",
+          "description": "UID of targeted player during switch_pending, or null."
+        },
+        "availableSpecialCards": {
+          "type": "array",
+          "description": "Remaining un-awarded special card IDs from the 5-card game deck."
+        },
+        "awardedCardIds": {
+          "type": "array",
+          "description": "Unique special card IDs already awarded during the current game (max 5)."
+        },
+        "lastCardEvent": {
+          "type": "object",
+          "description": "Latest special card award or activation event for real-time notifications, or null."
         },
         "createdAt": {
           "type": "string",
@@ -115,6 +144,7 @@
         "hostId",
         "status",
         "gameNumber",
+        "gameMode",
         "language",
         "roundsCount",
         "randomFirstPlayer",
@@ -126,8 +156,17 @@
         "totalTurnsCompleted",
         "completedQuestionsCount",
         "skippedQuestionsCount",
+        "currentQuestionId",
         "usedQuestionIds",
+        "activePlayerId",
         "turnNonce",
+        "turnQuestionsRemaining",
+        "turnMode",
+        "switchSourceId",
+        "switchTargetId",
+        "availableSpecialCards",
+        "awardedCardIds",
+        "lastCardEvent",
         "createdAt",
         "updatedAt",
         "expiresAt"
@@ -135,7 +174,7 @@
     },
     "RoomPlayer": {
       "title": "RoomPlayer",
-      "description": "Player membership document inside a multiplayer room with independent 3-skip quota.",
+      "description": "Player membership document inside a multiplayer room with score, 3-skip quota, double penalty flags, special card inventory, and voice status.",
       "type": "object",
       "properties": {
         "uid": {
@@ -161,6 +200,10 @@
           "type": "boolean",
           "description": "Whether this player is currently the room host."
         },
+        "score": {
+          "type": "integer",
+          "description": "Player score (+1 answer, -3 skip, negative allowed)."
+        },
         "skipsRemaining": {
           "type": "integer",
           "description": "Remaining skips for this player in the current game (0 to 3)."
@@ -168,6 +211,34 @@
         "skipsUsed": {
           "type": "integer",
           "description": "Skips consumed by this player in the current game (0 to 3)."
+        },
+        "pendingDoubleTurn": {
+          "type": "boolean",
+          "description": "Whether this player owes two consecutive questions on their next turn after their 3rd skip."
+        },
+        "doublePenaltyUsed": {
+          "type": "boolean",
+          "description": "Whether the one-time double-question penalty has already been triggered."
+        },
+        "goldCards": {
+          "type": "integer",
+          "description": "Number of unused Gold Cards in this player's inventory (0 to 2)."
+        },
+        "switchCards": {
+          "type": "integer",
+          "description": "Number of unused Switch Cards in this player's inventory (0 to 2)."
+        },
+        "antiSwitchCards": {
+          "type": "integer",
+          "description": "Number of unused Anti-Switch Cards in this player's inventory (0 to 1)."
+        },
+        "voiceJoined": {
+          "type": "boolean",
+          "description": "Whether the player is currently connected to the room voice channel."
+        },
+        "micMuted": {
+          "type": "boolean",
+          "description": "Whether the player's microphone is muted in voice chat."
         },
         "connected": {
           "type": "boolean",
@@ -189,12 +260,94 @@
         "name",
         "avatarColor",
         "isHost",
+        "score",
         "skipsRemaining",
         "skipsUsed",
+        "pendingDoubleTurn",
+        "doublePenaltyUsed",
+        "goldCards",
+        "switchCards",
+        "antiSwitchCards",
+        "voiceJoined",
+        "micMuted",
         "connected",
         "joinedAt",
         "lastSeenAt"
       ]
+    },
+    "RoomChatMessage": {
+      "title": "RoomChatMessage",
+      "description": "Real-time text chat message scoped to a single multiplayer room.",
+      "type": "object",
+      "properties": {
+        "senderId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the message author.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "senderName": {
+          "type": "string",
+          "description": "Display name of the message author.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "text": {
+          "type": "string",
+          "description": "Chat message content.",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "memberIds": {
+          "type": "array",
+          "description": "Snapshot of room player UIDs permitted to view the message without collection-wide get() reads."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the message was sent."
+        }
+      },
+      "required": ["senderId", "senderName", "text", "memberIds", "createdAt"]
+    },
+    "VoiceSignal": {
+      "title": "VoiceSignal",
+      "description": "Ephemeral WebRTC signaling handshake document (SDP offer/answer or ICE candidate) between two room members. No audio is ever stored.",
+      "type": "object",
+      "properties": {
+        "fromUid": {
+          "type": "string",
+          "description": "Sender UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "toUid": {
+          "type": "string",
+          "description": "Recipient UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "type": {
+          "type": "string",
+          "description": "WebRTC signal payload type.",
+          "enum": ["offer", "answer", "ice"]
+        },
+        "payload": {
+          "type": "string",
+          "description": "JSON-encoded SDP or ICE candidate.",
+          "minLength": 2,
+          "maxLength": 16384
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of signaling packet."
+        }
+      },
+      "required": ["fromUid", "toUid", "type", "payload", "createdAt"]
     }
   },
   "firestore": {
@@ -208,7 +361,19 @@
       "schema": {
         "$ref": "#/entities/RoomPlayer"
       },
-      "description": "Per-player membership state and independent 3-skip counters inside a room."
+      "description": "Per-player membership, score, skip counters, special card inventory, and voice mute state."
+    },
+    "/rooms/{roomId}/messages/{messageId}": {
+      "schema": {
+        "$ref": "#/entities/RoomChatMessage"
+      },
+      "description": "Real-time text chat messages scoped strictly to room members."
+    },
+    "/rooms/{roomId}/voiceSignals/{signalId}": {
+      "schema": {
+        "$ref": "#/entities/VoiceSignal"
+      },
+      "description": "Ephemeral WebRTC peer signaling packets for live room voice chat."
     }
   }
 }

@@ -1,6 +1,6 @@
 /**
  * Adversarial Security Rules Specification & Verification Matrix
- * Verifies the "Dirty Dozen" payloads against firestore.rules constraints.
+ * Verifies the adversarial payloads against firestore.rules constraints.
  */
 export const DIRTY_DOZEN_CASES = [
   {
@@ -44,7 +44,7 @@ export const DIRTY_DOZEN_CASES = [
     name: 'Non-Atomic Skip Without Room Turn Advance',
     path: '/rooms/ABC234/players/p1',
     operation: 'update',
-    payload: { skipsRemaining: 2, skipsUsed: 1 },
+    payload: { skipsRemaining: 2, skipsUsed: 1, score: -3 },
     expected: 'PERMISSION_DENIED',
     enforcedBy: 'getAfter(/rooms/ABC234).data.turnNonce == get(/rooms/ABC234).data.turnNonce + 1',
   },
@@ -110,5 +110,50 @@ export const DIRTY_DOZEN_CASES = [
     payload: { status: 'waiting' },
     expected: 'PERMISSION_DENIED',
     enforcedBy: 'existing().status != "closed"',
+  },
+  {
+    id: 13,
+    name: 'Arbitrary Score Inflation',
+    path: '/rooms/ABC234/players/p1',
+    operation: 'update',
+    payload: { score: 999 },
+    expected: 'PERMISSION_DENIED',
+    enforcedBy: 'players update -> score changes only allowed via atomic +1 / -3 turnNonce lock',
+  },
+  {
+    id: 14,
+    name: 'Self-Targeting Switch Card',
+    path: '/rooms/ABC234',
+    operation: 'update',
+    payload: { turnMode: 'switch_pending', switchSourceId: 'p1', switchTargetId: 'p1' },
+    expected: 'PERMISSION_DENIED',
+    enforcedBy: 'isUseSwitchCardAction -> incoming().switchTargetId != request.auth.uid',
+  },
+  {
+    id: 15,
+    name: 'Refusing Anti-Switch Forced Question',
+    path: '/rooms/ABC234',
+    operation: 'update',
+    payload: { skippedQuestionsCount: 1, turnNonce: 5 },
+    expected: 'PERMISSION_DENIED',
+    enforcedBy: 'isSkipQuestionAction & isUseGoldCardAction -> existing().turnMode == "normal"',
+  },
+  {
+    id: 16,
+    name: 'Non-Member Chat Access',
+    path: '/rooms/ABC234/messages/m1',
+    operation: 'create',
+    payload: { senderId: 'outsider', text: 'spam' },
+    expected: 'PERMISSION_DENIED',
+    enforcedBy: 'messages create -> isRoomMember(roomId) && incoming().senderId == request.auth.uid',
+  },
+  {
+    id: 17,
+    name: 'Voice Signal Sender Spoofing',
+    path: '/rooms/ABC234/voiceSignals/s1',
+    operation: 'create',
+    payload: { fromUid: 'victim', toUid: 'p2', type: 'offer' },
+    expected: 'PERMISSION_DENIED',
+    enforcedBy: 'voiceSignals create -> isRoomMember(roomId) && incoming().fromUid == request.auth.uid',
   },
 ] as const;

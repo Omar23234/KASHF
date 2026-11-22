@@ -11,10 +11,16 @@ import { SettingsScreen } from './components/SettingsScreen';
 import { SinglePhoneGameScreen } from './components/SinglePhoneGameScreen';
 import { SinglePhoneSetupScreen } from './components/SinglePhoneSetupScreen';
 import { AppProvider, useApp } from './context/AppContext';
-import { drawRandomUnusedQuestionId, shuffleArray, TOTAL_QUESTIONS_COUNT } from './data/questions';
 import { getMaxRoundsForPlayers, leaveMultiplayerRoom } from './firebase/multiplayerService';
 import type { GameLengthMode, SinglePhoneGameState, SinglePhonePlayer } from './types/game';
 import { soundFX } from './utils/sound';
+import {
+  answerSinglePhoneQuestion,
+  createSinglePhoneGame,
+  useSinglePhoneAntiSwitchCard,
+  useSinglePhoneGoldCard,
+  useSinglePhoneSwitchCard,
+} from './utils/specialCards';
 
 const SINGLE_PLAYERS_KEY = 'kashf_single_players';
 
@@ -65,81 +71,47 @@ const AppContent: React.FC = () => {
   }, [setScreen]);
 
   const startSinglePhoneGame = () => {
-    const orderedPlayers = singleRandomFirst ? shuffleArray(singlePlayers) : [...singlePlayers];
-    const safeRounds = Math.min(getMaxRoundsForPlayers(orderedPlayers.length), singleRoundsCount);
-    const firstQ = drawRandomUnusedQuestionId([]);
-    setSingleGame({
-      phase: firstQ === null ? 'exhausted' : 'playing',
-      gameMode: singleGameMode,
-      players: orderedPlayers,
-      roundsCount: safeRounds,
-      randomFirstPlayer: singleRandomFirst,
-      currentTurnIndex: 0,
-      currentRound: 1,
-      totalTurnsCompleted: 0,
-      completedQuestionsCount: 0,
-      currentQuestionId: firstQ,
-      usedQuestionIds: firstQ !== null ? [firstQ] : [],
-    });
+    setSingleGame(
+      createSinglePhoneGame({
+        players: singlePlayers,
+        gameMode: singleGameMode,
+        roundsCount: singleRoundsCount,
+        randomFirstPlayer: singleRandomFirst,
+      })
+    );
     setScreen('single_game');
   };
 
   const advanceSinglePhoneTurn = () => {
     setSingleGame((prev) => {
-      if (!prev || prev.phase !== 'playing') return prev;
-      let nextIdx = prev.currentTurnIndex + 1;
-      let nextRound = prev.currentRound;
-      if (nextIdx >= prev.players.length) {
-        nextIdx = 0;
-        nextRound += 1;
-      }
-
-      const nextTotalTurns = prev.totalTurnsCompleted + 1;
-      const nextCompleted = prev.completedQuestionsCount + 1;
-
-      const isComplete =
-        prev.gameMode === 'rounds'
-          ? nextRound > prev.roundsCount
-          : nextTotalTurns >= TOTAL_QUESTIONS_COUNT;
-
-      if (isComplete) {
+      if (!prev) return prev;
+      const next = answerSinglePhoneQuestion(prev);
+      if (next.phase === 'finished' || next.phase === 'exhausted') {
         soundFX.complete(soundEnabled);
-        return {
-          ...prev,
-          phase: 'finished',
-          currentTurnIndex: 0,
-          currentRound: prev.roundsCount,
-          totalTurnsCompleted: nextTotalTurns,
-          completedQuestionsCount: nextCompleted,
-          currentQuestionId: null,
-        };
+      } else if (next.lastCardEvent?.type === 'awarded') {
+        soundFX.turnAlert(soundEnabled);
       }
-
-      const nextQ = drawRandomUnusedQuestionId(prev.usedQuestionIds);
-      if (nextQ === null) {
-        soundFX.complete(soundEnabled);
-        return {
-          ...prev,
-          phase: 'exhausted',
-          currentTurnIndex: nextIdx,
-          currentRound: nextRound,
-          totalTurnsCompleted: nextTotalTurns,
-          completedQuestionsCount: nextCompleted,
-          currentQuestionId: null,
-        };
-      }
-
-      return {
-        ...prev,
-        phase: 'playing',
-        currentTurnIndex: nextIdx,
-        currentRound: nextRound,
-        totalTurnsCompleted: nextTotalTurns,
-        completedQuestionsCount: nextCompleted,
-        currentQuestionId: nextQ,
-        usedQuestionIds: [...prev.usedQuestionIds, nextQ],
-      };
+      return next;
     });
+  };
+
+  const handleSingleGoldCard = () => {
+    setSingleGame((prev) => {
+      if (!prev) return prev;
+      const next = useSinglePhoneGoldCard(prev);
+      if (next.phase === 'finished' || next.phase === 'exhausted') {
+        soundFX.complete(soundEnabled);
+      }
+      return next;
+    });
+  };
+
+  const handleSingleSwitchCard = (targetPlayerId: string) => {
+    setSingleGame((prev) => (prev ? useSinglePhoneSwitchCard(prev, targetPlayerId) : prev));
+  };
+
+  const handleSingleAntiSwitchCard = () => {
+    setSingleGame((prev) => (prev ? useSinglePhoneAntiSwitchCard(prev) : prev));
   };
 
   const handleBack = () => {
@@ -186,6 +158,9 @@ const AppContent: React.FC = () => {
         <SinglePhoneGameScreen
           game={singleGame}
           onNextQuestion={advanceSinglePhoneTurn}
+          onUseGoldCard={handleSingleGoldCard}
+          onUseSwitchCard={handleSingleSwitchCard}
+          onUseAntiSwitchCard={handleSingleAntiSwitchCard}
           onPlayAgain={startSinglePhoneGame}
           onReturnHome={() => setScreen('home')}
         />

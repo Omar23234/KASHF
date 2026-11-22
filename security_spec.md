@@ -4,22 +4,37 @@
 1. **Room Identity**: A room document ID must be a 6-character uppercase alphanumeric code (`^[A-Z0-9]{6}$`) matching `roomCode`, created only by an authenticated user setting `hostId == request.auth.uid`, `status == 'waiting'`, and `playerOrder == [request.auth.uid]`.
 2. **No Room Scraping**: Collection `list` queries on `/rooms` and `/rooms/{roomId}/players` are strictly denied (`allow list: if false`). Players access rooms exclusively by exact 6-character room code lookup.
 3. **Player Capacity & Membership**: `playerOrder` is strictly bounded to `<= 12` UIDs, and starting a game requires `>= 2` players. A player document `/rooms/{roomId}/players/{playerId}` can only be created for `request.auth.uid` while the parent room status is `'waiting'`.
-4. **Independent 3-Skip Quota**: Every player initializes with `skipsRemaining == 3` and `skipsUsed == 0`. Only the current `activePlayerId` may decrement their own `skipsRemaining` by 1, and ONLY atomically alongside incrementing the room's `turnNonce` and `skippedQuestionsCount` (`getAfter` / `get` lock). A 4th skip (`skipsRemaining < 1`) is rejected by Firestore rules.
-5. **Turn Race Protection**: Every Next Question or Skip transition must increment `turnNonce` by exactly 1 and can only be executed by `activePlayerId` (or `hostId` on Next Question for inactive/disconnected player recovery).
-6. **Question Non-Repetition**: Every new `currentQuestionId` must be an integer `1..63` that is NOT already in `existing().usedQuestionIds`, and `usedQuestionIds` is bounded to `<= 63`.
-7. **Terminal State Lock**: Once a room reaches `status == 'closed'`, no further updates are permitted.
-8. **Server Temporal Integrity**: `createdAt`, `updatedAt`, `joinedAt`, and `lastSeenAt` must equal `request.time`.
+4. **Scoring & 3-Skip Penalty**:
+   - Answering a question adds `+1` to the answering player's `score` (`-1000..1000`, negative scores explicitly allowed).
+   - Normal Skip deducts `-3` from the skipping player's `score` and decrements `skipsRemaining` (`0..3`). A 4th skip is denied (`skipsRemaining < 1`).
+   - On the 3rd skip (`skipsUsed == 3`), `pendingDoubleTurn` becomes `true` (if `!doublePenaltyUsed`), giving two consecutive different questions on their next turn, applied only once (`doublePenaltyUsed` locked to `true`).
+5. **5-Card Game Cap & Inventory Ownership**:
+   - `availableSpecialCards` + `awardedCardIds` never exceeds 5 unique IDs (`gold_1`, `gold_2`, `switch_1`, `switch_2`, `anti_switch_1`).
+   - Card rewards never consume items from `usedQuestionIds`.
+   - Gold Card (`goldCards >= 1`, `turnMode == 'normal'`): owner only, `0` score change, consumes 1 Gold Card.
+   - Switch Card (`switchCards >= 1`, `turnMode == 'normal'`): owner only, target must be another room player (`target != uid`), consumes 1 Switch Card, sets `turnMode = 'switch_pending'`.
+   - Anti-Switch Card (`antiSwitchCards >= 1`, `turnMode == 'switch_pending'`, `switchTargetId == uid`): target owner only, consumes 1 Anti-Switch Card, sets `turnMode = 'anti_switch_forced'` returning question to `switchSourceId` who cannot skip or Gold Card out.
+6. **Turn Race Protection & Question Non-Repetition**: Every turn or card transition increments `turnNonce` by 1. Every drawn `currentQuestionId` is an integer `1..63` not previously in `usedQuestionIds`.
+7. **Room-Scoped Text Chat & Ephemeral Voice Signaling**:
+   - `/rooms/{roomId}/messages/{messageId}` can only be created by room members (`isRoomMember(roomId)`) with `senderId == request.auth.uid` and `text` 1..500 chars; reads require `request.auth.uid in resource.data.memberIds` (or `isRoomMember` on `get`).
+   - `/rooms/{roomId}/voiceSignals/{signalId}` stores only SDP/ICE strings (never audio), writable only by room members with `fromUid == request.auth.uid` and readable/deletable only by `fromUid` or `toUid`.
+8. **Terminal State Lock & Server Temporal Integrity**: Closed rooms deny updates. Timestamps (`createdAt`, `updatedAt`, `joinedAt`, `lastSeenAt`) must equal `request.time`.
 
-## 2. The "Dirty Dozen" Adversarial Payloads
+## 2. Adversarial Payloads Matrix
 1. **Ghost Field Shadow Create**: Create `/rooms/ABC234` with extra `isAdmin: true` field -> `PERMISSION_DENIED`.
 2. **Host Spoofing on Create**: Create `/rooms/ABC234` with `hostId: 'victim-uid'` -> `PERMISSION_DENIED`.
 3. **Oversized Room Code ID Poisoning**: Create `/rooms/AAAA...1500chars` -> `PERMISSION_DENIED`.
 4. **Fourth Skip Bypass**: Update `/rooms/ABC234/players/p1` with `skipsRemaining: -1` when `skipsRemaining == 0` -> `PERMISSION_DENIED`.
-5. **Non-Atomic Skip**: Update `/rooms/ABC234/players/p1` (`skipsRemaining: 2`) without updating `/rooms/ABC234` (`turnNonce + 1`) in the same transaction -> `PERMISSION_DENIED`.
+5. **Non-Atomic Skip Without Turn Advance**: Update `/rooms/ABC234/players/p1` (`skipsRemaining: 2`) without updating `/rooms/ABC234` (`turnNonce + 1`) -> `PERMISSION_DENIED`.
 6. **Stealing Another Player's Turn**: Non-active non-host player attempts `Next Question` -> `PERMISSION_DENIED`.
 7. **Host Stealing a Player's Skip**: Host attempts to trigger `Skip` during another player's turn -> `PERMISSION_DENIED`.
 8. **Duplicate Question Injection**: Active player sets `currentQuestionId` to an ID already in `usedQuestionIds` -> `PERMISSION_DENIED`.
-9. **Client Timestamp Forgery**: Update `/rooms/ABC234` with backdated `updatedAt` != `request.time` -> `PERMISSION_DENIED`.
-10. **Joining Full or Active Room**: Player attempts to join a room with `status == 'playing'` or `playerCount == 12` -> `PERMISSION_DENIED`.
+9. **Client Timestamp Forgery**: Update `/rooms/ABC234` with backdated `updatedAt != request.time` -> `PERMISSION_DENIED`.
+10. **Joining Active or Full Room**: Player joins a room with `status == 'playing'` or `playerCount == 12` -> `PERMISSION_DENIED`.
 11. **Room List Scraping**: Client executes `getDocs(collection(db, 'rooms'))` -> `PERMISSION_DENIED`.
-12. **Closed Room Mutation**: Any user attempts to update a room after `status == 'closed'` -> `PERMISSION_DENIED`.
+12. **Closed Room Mutation**: Any user updates a room after `status == 'closed'` -> `PERMISSION_DENIED`.
+13. **Arbitrary Score Inflation**: Player updates their own `score` to `+999` outside an atomic turn transaction -> `PERMISSION_DENIED`.
+14. **Self-Targeting Switch Card**: Active player sets `switchTargetId == request.auth.uid` -> `PERMISSION_DENIED`.
+15. **Refusing Anti-Switch Forced Turn**: Player under `turnMode == 'anti_switch_forced'` attempts `Skip` or `Gold Card` -> `PERMISSION_DENIED`.
+16. **Unauthorized Chat Read/Write**: Non-member creates or queries `/rooms/ABC234/messages` -> `PERMISSION_DENIED`.
+17. **Voice Signal Spoofing**: User writes `/rooms/ABC234/voiceSignals` with `fromUid != request.auth.uid` -> `PERMISSION_DENIED`.

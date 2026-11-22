@@ -123,35 +123,35 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
       className="flex-1 flex flex-col gap-6 pb-24"
     >
       <div className="space-y-1">
-        <h1 className="text-2xl sm:text-3xl font-extrabold text-white">{t.singlePhoneTitle}</h1>
-        <p className="text-sm text-slate-400">{t.singlePhoneSubtitle}</p>
+        <h1 className="text-2xl sm:text-3xl font-extrabold text-[#231A15]">{t.singlePhoneTitle}</h1>
+        <p className="text-sm text-[#6E5E50]">{t.singlePhoneSubtitle}</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Players Setup */}
-        <section className="lg:col-span-7 rounded-3xl bg-[#0C1226]/95 border border-white/10 p-5 sm:p-6 space-y-5">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/8 pb-4">
+        <section className="lg:col-span-7 rounded-3xl bg-[#FFFDF9] border border-[#DDD2C0] p-5 sm:p-6 space-y-5 shadow-[0_8px_24px_-14px_rgba(35,26,21,0.1)]">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E8DEC8] pb-4">
             <div className="flex items-center gap-2">
-              <Users className="w-5 h-5 text-blue-400" />
-              <span className="font-bold text-white">{t.playerCountSetup}</span>
+              <Users className="w-5 h-5 text-[#8B5E3C]" />
+              <span className="font-bold text-[#231A15]">{t.playerCountSetup}</span>
             </div>
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={() => handleSetCount(players.length - 1)}
                 disabled={players.length <= 2}
-                className="w-10 h-10 rounded-xl bg-white/8 hover:bg-white/15 text-white font-bold disabled:opacity-35 cursor-pointer"
+                className="w-10 h-10 rounded-xl bg-[#EFE6D6] hover:bg-[#E5DAC5] border border-[#D5C7B2] text-[#231A15] font-bold disabled:opacity-35 cursor-pointer"
               >
                 −
               </button>
-              <span className="min-w-[3.5rem] text-center font-mono-tabular font-extrabold text-blue-300 text-lg">
+              <span className="min-w-[3.5rem] text-center font-mono-tabular font-extrabold text-[#8B5E3C] text-lg">
                 {players.length} / 12
               </span>
               <button
                 type="button"
                 onClick={() => handleSetCount(players.length + 1)}
                 disabled={players.length >= 12}
-                className="w-10 h-10 rounded-xl bg-white/8 hover:bg-white/15 text-white font-bold disabled:opacity-35 cursor-pointer"
+                className="w-10 h-10 rounded-xl bg-[#EFE6D6] hover:bg-[#E5DAC5] border border-[#D5C7B2] text-[#231A15] font-bold disabled:opacity-35 cursor-pointer"
               >
                 +
               </button>
@@ -165,27 +165,27 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               placeholder={t.addPlayerPlaceholder}
-              className="flex-1 min-h-[46px] px-4 rounded-2xl bg-[#070B18] border border-white/15 focus:border-blue-500 focus:outline-none text-white placeholder:text-slate-500 text-sm sm:text-base"
+              className="flex-1 min-h-[46px] px-4 rounded-2xl bg-[#FBF7F0] border border-[#D5C7B2] focus:border-[#8B5E3C] focus:outline-none text-[#231A15] placeholder:text-[#9C8D7E] text-sm sm:text-base"
             />
             <button
               type="submit"
               disabled={players.length >= 12}
-              className="min-h-[46px] px-5 rounded-2xl bg-blue-600/25 hover:bg-blue-600/35 border border-blue-400/35 text-blue-100 font-bold text-sm flex items-center gap-1.5 transition cursor-pointer disabled:opacity-40 shrink-0"
+              className="min-h-[46px] px-5 rounded-2xl bg-[#231A15] hover:bg-[#3A2C24] text-[#FBF7F0] font-bold text-sm flex items-center gap-1.5 transition cursor-pointer disabled:opacity-40 shrink-0"
             >
               <Plus className="w-4 h-4" />
               <span>{t.addPlayerBtn}</span>
             </button>
           </form>
 
-          {errorMsg && <p className="text-sm text-rose-400 font-semibold">{errorMsg}</p>}
+          {errorMsg && <p className="text-sm text-[#9B3B30] font-bold">{errorMsg}</p>}
 
-          <ul className="divide-y divide-white/8">
+          <ul className="divide-y divide-[#EFE6D6]">
             {players.map((p, idx) => {
               const isEditing = editingId === p.id;
               return (
                 <li key={p.id} className="py-3 flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0 flex-1">
-                    <span className="w-6 text-xs font-mono-tabular text-slate-500 shrink-0">
+                    <span className="w-6 text-xs font-mono-tabular text-[#8B5E3C] font-bold shrink-0">
                       {idx + 1}.
                     </span>
                     <PlayerAvatar name={p.name} paletteId={p.avatarColor} size="sm" />
@@ -202,10 +202,10 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
                             saveEdit(p.id);
                           }
                         }}
-                        className="flex-1 min-h-[40px] px-3 rounded-xl bg-[#070B18] border border-blue-500 text-white text-sm focus:outline-none"
+                        className="flex-1 min-h-[40px] px-3 rounded-xl bg-[#FBF7F0] border border-[#8B5E3C] text-[#231A15] text-sm focus:outline-none"
                       />
                     ) : (
-                      <span className="font-bold text-white truncate">{p.name}</span>
+                      <span className="font-bold text-[#231A15] truncate">{p.name}</span>
                     )}
                   </div>
 
@@ -214,7 +214,7 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
                       <button
                         type="button"
                         onClick={() => saveEdit(p.id)}
-                        className="min-h-[40px] min-w-[40px] px-3 rounded-xl bg-emerald-500/20 text-emerald-300 text-xs font-bold flex items-center gap-1 cursor-pointer"
+                        className="min-h-[40px] min-w-[40px] px-3 rounded-xl bg-[#EEF3EC] border border-[#B9CEB3] text-[#355432] text-xs font-bold flex items-center gap-1 cursor-pointer"
                       >
                         <Check className="w-3.5 h-3.5" />
                         <span>{t.saveName}</span>
@@ -223,7 +223,7 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
                       <button
                         type="button"
                         onClick={() => startEdit(p)}
-                        className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl text-slate-400 hover:text-white hover:bg-white/8 cursor-pointer"
+                        className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl text-[#6E5E50] hover:text-[#231A15] hover:bg-[#EFE6D6] cursor-pointer"
                         aria-label={t.editName}
                       >
                         <Edit3 className="w-4 h-4" />
@@ -234,7 +234,7 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
                       type="button"
                       disabled={players.length <= 2}
                       onClick={() => handleRemovePlayer(p.id)}
-                      className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 disabled:opacity-25 cursor-pointer"
+                      className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl text-[#6E5E50] hover:text-[#9B3B30] hover:bg-[#F9EAE6] disabled:opacity-25 cursor-pointer"
                       aria-label={t.removePlayer}
                     >
                       <Trash2 className="w-4 h-4" />
@@ -247,15 +247,15 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
         </section>
 
         {/* Game Length & Match Settings */}
-        <section className="lg:col-span-5 rounded-3xl bg-[#0C1226]/95 border border-white/10 p-5 sm:p-6 space-y-5">
-          <div className="border-b border-white/8 pb-3">
-            <h2 className="text-lg font-bold text-white">{t.gameSettingsTitle}</h2>
+        <section className="lg:col-span-5 rounded-3xl bg-[#FFFDF9] border border-[#DDD2C0] p-5 sm:p-6 space-y-5 shadow-[0_8px_24px_-14px_rgba(35,26,21,0.1)]">
+          <div className="border-b border-[#E8DEC8] pb-3">
+            <h2 className="text-lg font-bold text-[#231A15]">{t.gameSettingsTitle}</h2>
           </div>
 
           <div className="space-y-4">
             <div className="space-y-2">
-              <span className="text-xs font-semibold text-slate-400">{t.gameLengthLabel}</span>
-              <div className="grid grid-cols-2 gap-2 p-1 rounded-2xl bg-[#070B18] border border-white/12">
+              <span className="text-xs font-bold text-[#6E5E50]">{t.gameLengthLabel}</span>
+              <div className="grid grid-cols-2 gap-2 p-1 rounded-2xl bg-[#F3EBDD] border border-[#DDD2C0]">
                 <button
                   type="button"
                   onClick={() => {
@@ -264,8 +264,8 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
                   }}
                   className={`min-h-[42px] px-3 rounded-xl text-xs font-bold transition cursor-pointer ${
                     gameMode === 'rounds'
-                      ? 'bg-blue-600 text-white'
-                      : 'text-slate-400 hover:text-white'
+                      ? 'bg-[#231A15] text-[#FBF7F0]'
+                      : 'text-[#6E5E50] hover:text-[#231A15]'
                   }`}
                 >
                   {t.roundsModeOption}
@@ -278,8 +278,8 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
                   }}
                   className={`min-h-[42px] px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
                     gameMode === 'all_questions'
-                      ? 'bg-violet-600 text-white'
-                      : 'text-slate-400 hover:text-white'
+                      ? 'bg-[#8B5E3C] text-[#FBF7F0]'
+                      : 'text-[#6E5E50] hover:text-[#231A15]'
                   }`}
                 >
                   <Layers className="w-3.5 h-3.5 shrink-0" />
@@ -291,8 +291,8 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
             {gameMode === 'rounds' ? (
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-sm">
-                  <span className="font-semibold text-slate-200">{t.roundsLabel}</span>
-                  <span className="font-mono-tabular font-bold text-blue-300">
+                  <span className="font-bold text-[#231A15]">{t.roundsLabel}</span>
+                  <span className="font-mono-tabular font-bold text-[#8B5E3C]">
                     {roundsCount} {t.roundUnit}
                   </span>
                 </div>
@@ -304,7 +304,7 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
                       soundFX.tap(soundEnabled);
                       setRoundsCount(Math.max(1, roundsCount - 1));
                     }}
-                    className="flex-1 min-h-[44px] rounded-xl bg-white/8 hover:bg-white/15 text-white font-bold disabled:opacity-35 cursor-pointer"
+                    className="flex-1 min-h-[44px] rounded-xl bg-[#EFE6D6] hover:bg-[#E5DAC5] border border-[#D5C7B2] text-[#231A15] font-bold disabled:opacity-35 cursor-pointer"
                   >
                     −
                   </button>
@@ -315,27 +315,27 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
                       soundFX.tap(soundEnabled);
                       setRoundsCount(Math.min(maxRounds, roundsCount + 1));
                     }}
-                    className="flex-1 min-h-[44px] rounded-xl bg-white/8 hover:bg-white/15 text-white font-bold disabled:opacity-35 cursor-pointer"
+                    className="flex-1 min-h-[44px] rounded-xl bg-[#EFE6D6] hover:bg-[#E5DAC5] border border-[#D5C7B2] text-[#231A15] font-bold disabled:opacity-35 cursor-pointer"
                   >
                     +
                   </button>
                 </div>
-                <p className="text-xs text-slate-400 tabular-nums">
+                <p className="text-xs text-[#6E5E50] tabular-nums">
                   {t.turnsTotalHint} {players.length} × {roundsCount} = {players.length * roundsCount} /{' '}
                   {TOTAL_QUESTIONS_COUNT} {t.turnUnit} ({t.maxRoundsHint} {maxRounds})
                 </p>
               </div>
             ) : (
-              <div className="rounded-2xl bg-violet-600/12 border border-violet-400/25 p-3.5 space-y-1">
-                <p className="text-xs font-bold text-violet-200">
+              <div className="rounded-2xl bg-[#F3EBDD] border border-[#D5C7B2] p-3.5 space-y-1">
+                <p className="text-xs font-bold text-[#231A15]">
                   {t.allQuestionsOption} ({TOTAL_QUESTIONS_COUNT} {t.turnUnit})
                 </p>
-                <p className="text-xs text-slate-300 leading-relaxed">{t.allQuestionsHint}</p>
+                <p className="text-xs text-[#5E4F43] leading-relaxed">{t.allQuestionsHint}</p>
               </div>
             )}
 
-            <div className="flex items-center justify-between gap-4 py-3 border-t border-white/8">
-              <span className="text-sm font-semibold text-slate-200">{t.randomFirstPlayer}</span>
+            <div className="flex items-center justify-between gap-4 py-3 border-t border-[#E8DEC8]">
+              <span className="text-sm font-bold text-[#231A15]">{t.randomFirstPlayer}</span>
               <button
                 type="button"
                 onClick={() => {
@@ -344,22 +344,22 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
                 }}
                 className={`min-h-[40px] px-4 rounded-xl text-xs font-bold border transition cursor-pointer ${
                   randomFirstPlayer
-                    ? 'bg-blue-600/25 border-blue-400/40 text-blue-200'
-                    : 'bg-white/5 border-white/10 text-slate-400'
+                    ? 'bg-[#231A15] border-[#231A15] text-[#FBF7F0]'
+                    : 'bg-[#F3EBDD] border-[#D5C7B2] text-[#6E5E50]'
                 }`}
               >
                 {randomFirstPlayer ? (language === 'ar' ? 'مفعّل' : 'On') : (language === 'ar' ? 'مغلق' : 'Off')}
               </button>
             </div>
 
-            <p className="text-xs text-slate-400 leading-relaxed border-t border-white/8 pt-3">
+            <p className="text-xs text-[#6E5E50] leading-relaxed border-t border-[#E8DEC8] pt-3">
               {t.ruleSingleBody}
             </p>
           </div>
         </section>
       </div>
 
-      <div className="fixed bottom-0 inset-x-0 z-30 bg-[#060913]/92 backdrop-blur-md border-t border-white/10 p-3 pb-safe">
+      <div className="fixed bottom-0 inset-x-0 z-30 bg-[#F6EFE3]/95 backdrop-blur-md border-t border-[#DDD2C0] p-3 pb-safe">
         <div className="max-w-5xl mx-auto">
           <button
             type="button"
@@ -368,7 +368,7 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
               soundFX.cardDeal(soundEnabled);
               onStartGame();
             }}
-            className="w-full min-h-[50px] rounded-2xl bg-gradient-to-r from-blue-600 to-violet-600 text-white font-extrabold text-base flex items-center justify-center gap-2 shadow-lg shadow-blue-700/30 hover:brightness-110 transition cursor-pointer disabled:opacity-45"
+            className="w-full min-h-[50px] rounded-2xl bg-[#231A15] hover:bg-[#3A2C24] text-[#FBF7F0] font-extrabold text-base flex items-center justify-center gap-2 shadow-md transition cursor-pointer disabled:opacity-45"
           >
             <Play className="w-5 h-5 fill-current" />
             <span>{t.startGame}</span>

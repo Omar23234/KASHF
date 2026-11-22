@@ -1,13 +1,18 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { signInAnonymously } from 'firebase/auth';
 import {
+  addDoc,
+  collection,
+  deleteDoc,
   doc,
   getDoc,
   onSnapshot,
+  query,
   runTransaction,
   serverTimestamp,
   Timestamp,
   updateDoc,
+  where,
   writeBatch,
   type Unsubscribe,
 } from 'firebase/firestore';
@@ -21,9 +26,17 @@ import {
   testConnection,
 } from '../firebase/config';
 import type { Language } from '../i18n/translations';
+import {
+  createShuffledCardDeck,
+  maybeDrawSpecialCardFromPool,
+  type CardEvent,
+  type GameLengthMode,
+  type SpecialCardId,
+  type TurnMode,
+} from '../utils/specialCards';
 
 export type RoomStatus = 'waiting' | 'playing' | 'finished' | 'exhausted' | 'closed';
-export type GameLengthMode = 'rounds' | 'all_questions';
+export type { GameLengthMode, TurnMode, CardEvent, SpecialCardId };
 
 export interface RoomDoc {
   roomCode: string;
@@ -46,6 +59,13 @@ export interface RoomDoc {
   usedQuestionIds: number[];
   activePlayerId: string | null;
   turnNonce: number;
+  turnQuestionsRemaining: number;
+  turnMode: TurnMode;
+  switchSourceId: string | null;
+  switchTargetId: string | null;
+  availableSpecialCards: SpecialCardId[];
+  awardedCardIds: SpecialCardId[];
+  lastCardEvent: CardEvent | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;
   expiresAt: Timestamp;
@@ -56,11 +76,37 @@ export interface RoomPlayerDoc {
   name: string;
   avatarColor: string;
   isHost: boolean;
+  score: number;
   skipsRemaining: number;
   skipsUsed: number;
+  pendingDoubleTurn: boolean;
+  doublePenaltyUsed: boolean;
+  goldCards: number;
+  switchCards: number;
+  antiSwitchCards: number;
+  voiceJoined: boolean;
+  micMuted: boolean;
   connected: boolean;
   joinedAt: Timestamp;
   lastSeenAt: Timestamp;
+}
+
+export interface RoomChatMessage {
+  id: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+  memberIds: string[];
+  createdAt: Timestamp | null;
+}
+
+export interface VoiceSignalDoc {
+  id: string;
+  fromUid: string;
+  toUid: string;
+  type: 'offer' | 'answer' | 'ice';
+  payload: string;
+  createdAt: Timestamp | null;
 }
 
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -188,6 +234,13 @@ export async function createMultiplayerRoom(params: {
     usedQuestionIds: [],
     activePlayerId: null,
     turnNonce: 0,
+    turnQuestionsRemaining: 1,
+    turnMode: 'normal',
+    switchSourceId: null,
+    switchTargetId: null,
+    availableSpecialCards: [],
+    awardedCardIds: [],
+    lastCardEvent: null,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
     expiresAt: Timestamp.fromMillis(Date.now() + 24 * 60 * 60 * 1000),
@@ -198,8 +251,16 @@ export async function createMultiplayerRoom(params: {
     name: cleanName,
     avatarColor: pickAvatarPalette(user.uid),
     isHost: true,
+    score: 0,
     skipsRemaining: 3,
     skipsUsed: 0,
+    pendingDoubleTurn: false,
+    doublePenaltyUsed: false,
+    goldCards: 0,
+    switchCards: 0,
+    antiSwitchCards: 0,
+    voiceJoined: false,
+    micMuted: false,
     connected: true,
     joinedAt: serverTimestamp(),
     lastSeenAt: serverTimestamp(),
@@ -262,8 +323,16 @@ export async function joinMultiplayerRoom(params: {
         name: cleanName,
         avatarColor: pickAvatarPalette(user.uid),
         isHost: false,
+        score: 0,
         skipsRemaining: 3,
         skipsUsed: 0,
+        pendingDoubleTurn: false,
+        doublePenaltyUsed: false,
+        goldCards: 0,
+        switchCards: 0,
+        antiSwitchCards: 0,
+        voiceJoined: false,
+        micMuted: false,
         connected: true,
         joinedAt: serverTimestamp(),
         lastSeenAt: serverTimestamp(),
@@ -360,12 +429,28 @@ export async function startOrRestartMultiplayerGame(roomCode: string): Promise<v
         usedQuestionIds: [firstQ],
         activePlayerId: nextOrder[0],
         turnNonce: room.turnNonce + 1,
+        turnQuestionsRemaining: 1,
+        turnMode: 'normal',
+        switchSourceId: null,
+        switchTargetId: null,
+        availableSpecialCards: createShuffledCardDeck(),
+        awardedCardIds: [],
+        lastCardEvent: null,
         updatedAt: serverTimestamp(),
       });
 
       if (isRestart) {
         for (const pid of nextOrder) {
-          tx.update(doc(firestore, 'rooms', roomCode, 'players', pid), { skipsRemaining: 3, skipsUsed: 0 });
+          tx.update(doc(firestore, 'rooms', roomCode, 'players', pid), {
+            score: 0,
+            skipsRemaining: 3,
+            skipsUsed: 0,
+            pendingDoubleTurn: false,
+            doublePenaltyUsed: false,
+            goldCards: 0,
+            switchCards: 0,
+            antiSwitchCards: 0,
+          });
         }
       }
     });
@@ -388,21 +473,54 @@ export async function advanceTurnNextQuestion(roomCode: string): Promise<void> {
       const roomSnap = await tx.get(roomRef);
       if (!roomSnap.exists()) throw new Error('ROOM_NOT_FOUND');
       const room = roomSnap.data() as RoomDoc;
-      if (room.status !== 'playing') return;
+      if (room.status !== 'playing' || !room.activePlayerId) return;
       if (room.activePlayerId !== user.uid && room.hostId !== user.uid) throw new Error('NOT_YOUR_TURN');
 
-      let nextIndex = room.currentTurnIndex + 1;
+      const activeUid = room.activePlayerId;
+      const activePlayerRef = doc(firestore, 'rooms', roomCode, 'players', activeUid);
+
+      const stayForSecondPenaltyQuestion = (room.turnQuestionsRemaining ?? 1) === 2;
+      let nextIndex = room.currentTurnIndex;
       let nextRound = room.currentRound;
-      if (nextIndex >= room.playerOrder.length) {
-        nextIndex = 0;
-        nextRound += 1;
+      if (!stayForSecondPenaltyQuestion) {
+        nextIndex = room.currentTurnIndex + 1;
+        if (nextIndex >= room.playerOrder.length) {
+          nextIndex = 0;
+          nextRound += 1;
+        }
       }
+
+      const nextActiveUid = room.playerOrder[nextIndex];
+      const nextPlayerRef =
+        nextActiveUid && nextActiveUid !== activeUid
+          ? doc(firestore, 'rooms', roomCode, 'players', nextActiveUid)
+          : null;
+
+      const [activeSnap, nextSnap] = await Promise.all([
+        tx.get(activePlayerRef),
+        nextPlayerRef ? tx.get(nextPlayerRef) : Promise.resolve(null),
+      ]);
+      if (!activeSnap.exists()) throw new Error('PLAYER_NOT_FOUND');
+      const activePlayer = activeSnap.data() as RoomPlayerDoc;
+      const incomingPlayer = nextSnap?.exists()
+        ? (nextSnap.data() as RoomPlayerDoc)
+        : nextActiveUid === activeUid
+          ? activePlayer
+          : null;
 
       const nextTotalTurns = room.totalTurnsCompleted + 1;
       const isComplete =
-        room.gameMode === 'rounds' ? nextRound > room.roundsCount : nextTotalTurns >= TOTAL_QUESTIONS_COUNT;
+        room.gameMode === 'rounds'
+          ? nextRound > room.roundsCount
+          : room.usedQuestionIds.length >= TOTAL_QUESTIONS_COUNT;
+
+      const activeScoreUpdate: Record<string, unknown> = {
+        score: (activePlayer.score ?? 0) + 1,
+        lastSeenAt: serverTimestamp(),
+      };
 
       if (isComplete) {
+        tx.update(activePlayerRef, activeScoreUpdate);
         tx.update(roomRef, {
           status: 'finished',
           currentTurnIndex: 0,
@@ -412,6 +530,10 @@ export async function advanceTurnNextQuestion(roomCode: string): Promise<void> {
           currentQuestionId: null,
           activePlayerId: null,
           turnNonce: room.turnNonce + 1,
+          turnQuestionsRemaining: 1,
+          turnMode: 'normal',
+          switchSourceId: null,
+          switchTargetId: null,
           updatedAt: serverTimestamp(),
         });
         return;
@@ -419,6 +541,7 @@ export async function advanceTurnNextQuestion(roomCode: string): Promise<void> {
 
       const nextQ = drawRandomUnusedQuestionId(room.usedQuestionIds);
       if (nextQ === null) {
+        tx.update(activePlayerRef, activeScoreUpdate);
         tx.update(roomRef, {
           status: 'exhausted',
           currentTurnIndex: nextIndex,
@@ -428,9 +551,73 @@ export async function advanceTurnNextQuestion(roomCode: string): Promise<void> {
           currentQuestionId: null,
           activePlayerId: null,
           turnNonce: room.turnNonce + 1,
+          turnQuestionsRemaining: 1,
+          turnMode: 'normal',
+          switchSourceId: null,
+          switchTargetId: null,
           updatedAt: serverTimestamp(),
         });
         return;
+      }
+
+      const nextTurnNonce = room.turnNonce + 1;
+      const totalConfiguredTurns =
+        room.gameMode === 'all_questions'
+          ? TOTAL_QUESTIONS_COUNT
+          : room.playerOrder.length * room.roundsCount;
+
+      let nextTurnQuestionsRemaining = 1;
+      const nextPlayerUpdate: Record<string, unknown> = {};
+
+      if (!stayForSecondPenaltyQuestion && incomingPlayer?.pendingDoubleTurn && !incomingPlayer?.doublePenaltyUsed) {
+        nextTurnQuestionsRemaining = 2;
+        if (nextPlayerRef) {
+          nextPlayerUpdate.pendingDoubleTurn = false;
+          nextPlayerUpdate.doublePenaltyUsed = true;
+        }
+      }
+
+      const availableCards = room.availableSpecialCards ?? [];
+      const awardedIds = room.awardedCardIds ?? [];
+      const cardRoll = maybeDrawSpecialCardFromPool({
+        availableSpecialCards: availableCards,
+        awardedCardIds: awardedIds,
+        totalTurnsCompleted: nextTotalTurns,
+        totalConfiguredTurns,
+      });
+
+      let nextAvailableCards = availableCards;
+      let nextAwardedIds = awardedIds;
+      let nextCardEvent: CardEvent | null = null;
+
+      if (cardRoll && incomingPlayer) {
+        nextAvailableCards = cardRoll.nextAvailableCards;
+        nextAwardedIds = cardRoll.nextAwardedCardIds;
+        const field =
+          cardRoll.drawnType === 'gold'
+            ? 'goldCards'
+            : cardRoll.drawnType === 'switch'
+              ? 'switchCards'
+              : 'antiSwitchCards';
+        if (nextActiveUid === activeUid) {
+          activeScoreUpdate[field] = (activePlayer[field] ?? 0) + 1;
+        } else if (nextPlayerRef) {
+          nextPlayerUpdate[field] = (incomingPlayer[field] ?? 0) + 1;
+        }
+        nextCardEvent = {
+          nonce: nextTurnNonce,
+          type: 'awarded',
+          cardId: cardRoll.drawnCardId,
+          actorUid: incomingPlayer.uid,
+          actorName: incomingPlayer.name,
+          targetUid: null,
+          targetName: null,
+        };
+      }
+
+      tx.update(activePlayerRef, activeScoreUpdate);
+      if (nextPlayerRef && Object.keys(nextPlayerUpdate).length > 0) {
+        tx.update(nextPlayerRef, nextPlayerUpdate);
       }
 
       tx.update(roomRef, {
@@ -441,13 +628,20 @@ export async function advanceTurnNextQuestion(roomCode: string): Promise<void> {
         completedQuestionsCount: room.completedQuestionsCount + 1,
         currentQuestionId: nextQ,
         usedQuestionIds: [...room.usedQuestionIds, nextQ],
-        activePlayerId: room.playerOrder[nextIndex],
-        turnNonce: room.turnNonce + 1,
+        activePlayerId: nextActiveUid,
+        turnNonce: nextTurnNonce,
+        turnQuestionsRemaining: nextTurnQuestionsRemaining,
+        turnMode: 'normal',
+        switchSourceId: null,
+        switchTargetId: null,
+        availableSpecialCards: nextAvailableCards,
+        awardedCardIds: nextAwardedIds,
+        lastCardEvent: nextCardEvent,
         updatedAt: serverTimestamp(),
       });
     });
   } catch (error) {
-    if (error instanceof Error && ['ROOM_NOT_FOUND', 'NOT_YOUR_TURN'].includes(error.message)) {
+    if (error instanceof Error && ['ROOM_NOT_FOUND', 'NOT_YOUR_TURN', 'PLAYER_NOT_FOUND'].includes(error.message)) {
       throw error;
     }
     handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomCode}`);
@@ -463,28 +657,53 @@ export async function skipTurnQuestion(roomCode: string): Promise<void> {
 
   try {
     await runTransaction(firestore, async (tx) => {
-      const [roomSnap, playerSnap] = await Promise.all([tx.get(roomRef), tx.get(playerRef)]);
-      if (!roomSnap.exists() || !playerSnap.exists()) throw new Error('ROOM_NOT_FOUND');
+      const roomSnap = await tx.get(roomRef);
+      if (!roomSnap.exists()) throw new Error('ROOM_NOT_FOUND');
       const room = roomSnap.data() as RoomDoc;
-      const player = playerSnap.data() as RoomPlayerDoc;
       if (room.status !== 'playing') return;
+      if (room.turnMode !== 'normal') throw new Error('CANNOT_REFUSE_FORCED_TURN');
       if (room.activePlayerId !== user.uid) throw new Error('NOT_YOUR_TURN');
+
+      const stayForSecondPenaltyQuestion = (room.turnQuestionsRemaining ?? 1) === 2;
+      let nextIndex = room.currentTurnIndex;
+      let nextRound = room.currentRound;
+      if (!stayForSecondPenaltyQuestion) {
+        nextIndex = room.currentTurnIndex + 1;
+        if (nextIndex >= room.playerOrder.length) {
+          nextIndex = 0;
+          nextRound += 1;
+        }
+      }
+
+      const nextActiveUid = room.playerOrder[nextIndex];
+      const nextPlayerRef =
+        nextActiveUid && nextActiveUid !== user.uid
+          ? doc(firestore, 'rooms', roomCode, 'players', nextActiveUid)
+          : null;
+
+      const [playerSnap, nextSnap] = await Promise.all([
+        tx.get(playerRef),
+        nextPlayerRef ? tx.get(nextPlayerRef) : Promise.resolve(null),
+      ]);
+      if (!playerSnap.exists()) throw new Error('PLAYER_NOT_FOUND');
+      const player = playerSnap.data() as RoomPlayerDoc;
       if (player.skipsRemaining < 1) throw new Error('NO_SKIPS_LEFT');
 
-      let nextIndex = room.currentTurnIndex + 1;
-      let nextRound = room.currentRound;
-      if (nextIndex >= room.playerOrder.length) {
-        nextIndex = 0;
-        nextRound += 1;
-      }
+      const nextSkipsUsed = player.skipsUsed + 1;
+      const shouldArmDouble =
+        nextSkipsUsed === 3 && !player.doublePenaltyUsed ? true : Boolean(player.pendingDoubleTurn);
 
       const nextTotalTurns = room.totalTurnsCompleted + 1;
       const isComplete =
-        room.gameMode === 'rounds' ? nextRound > room.roundsCount : nextTotalTurns >= TOTAL_QUESTIONS_COUNT;
+        room.gameMode === 'rounds'
+          ? nextRound > room.roundsCount
+          : room.usedQuestionIds.length >= TOTAL_QUESTIONS_COUNT;
 
       tx.update(playerRef, {
         skipsRemaining: player.skipsRemaining - 1,
-        skipsUsed: player.skipsUsed + 1,
+        skipsUsed: nextSkipsUsed,
+        score: (player.score ?? 0) - 3,
+        pendingDoubleTurn: shouldArmDouble,
         lastSeenAt: serverTimestamp(),
       });
 
@@ -498,6 +717,7 @@ export async function skipTurnQuestion(roomCode: string): Promise<void> {
           currentQuestionId: null,
           activePlayerId: null,
           turnNonce: room.turnNonce + 1,
+          turnQuestionsRemaining: 1,
           updatedAt: serverTimestamp(),
         });
         return;
@@ -514,9 +734,61 @@ export async function skipTurnQuestion(roomCode: string): Promise<void> {
           currentQuestionId: null,
           activePlayerId: null,
           turnNonce: room.turnNonce + 1,
+          turnQuestionsRemaining: 1,
           updatedAt: serverTimestamp(),
         });
         return;
+      }
+
+      const nextTurnNonce = room.turnNonce + 1;
+      const incomingPlayer = nextSnap?.exists() ? (nextSnap.data() as RoomPlayerDoc) : null;
+      let nextTurnQuestionsRemaining = 1;
+      const nextPlayerUpdate: Record<string, unknown> = {};
+
+      if (!stayForSecondPenaltyQuestion && incomingPlayer?.pendingDoubleTurn && !incomingPlayer?.doublePenaltyUsed) {
+        nextTurnQuestionsRemaining = 2;
+        nextPlayerUpdate.pendingDoubleTurn = false;
+        nextPlayerUpdate.doublePenaltyUsed = true;
+      }
+
+      const totalConfiguredTurns =
+        room.gameMode === 'all_questions'
+          ? TOTAL_QUESTIONS_COUNT
+          : room.playerOrder.length * room.roundsCount;
+      const cardRoll = maybeDrawSpecialCardFromPool({
+        availableSpecialCards: room.availableSpecialCards ?? [],
+        awardedCardIds: room.awardedCardIds ?? [],
+        totalTurnsCompleted: nextTotalTurns,
+        totalConfiguredTurns,
+      });
+
+      let nextAvailableCards = room.availableSpecialCards ?? [];
+      let nextAwardedIds = room.awardedCardIds ?? [];
+      let nextCardEvent: CardEvent | null = null;
+
+      if (cardRoll && incomingPlayer && nextPlayerRef) {
+        nextAvailableCards = cardRoll.nextAvailableCards;
+        nextAwardedIds = cardRoll.nextAwardedCardIds;
+        const field =
+          cardRoll.drawnType === 'gold'
+            ? 'goldCards'
+            : cardRoll.drawnType === 'switch'
+              ? 'switchCards'
+              : 'antiSwitchCards';
+        nextPlayerUpdate[field] = (incomingPlayer[field] ?? 0) + 1;
+        nextCardEvent = {
+          nonce: nextTurnNonce,
+          type: 'awarded',
+          cardId: cardRoll.drawnCardId,
+          actorUid: incomingPlayer.uid,
+          actorName: incomingPlayer.name,
+          targetUid: null,
+          targetName: null,
+        };
+      }
+
+      if (nextPlayerRef && Object.keys(nextPlayerUpdate).length > 0) {
+        tx.update(nextPlayerRef, nextPlayerUpdate);
       }
 
       tx.update(roomRef, {
@@ -527,15 +799,238 @@ export async function skipTurnQuestion(roomCode: string): Promise<void> {
         skippedQuestionsCount: room.skippedQuestionsCount + 1,
         currentQuestionId: nextQ,
         usedQuestionIds: [...room.usedQuestionIds, nextQ],
-        activePlayerId: room.playerOrder[nextIndex],
-        turnNonce: room.turnNonce + 1,
+        activePlayerId: nextActiveUid,
+        turnNonce: nextTurnNonce,
+        turnQuestionsRemaining: nextTurnQuestionsRemaining,
+        availableSpecialCards: nextAvailableCards,
+        awardedCardIds: nextAwardedIds,
+        lastCardEvent: nextCardEvent,
         updatedAt: serverTimestamp(),
       });
     });
   } catch (error) {
-    if (error instanceof Error && ['ROOM_NOT_FOUND', 'NOT_YOUR_TURN', 'NO_SKIPS_LEFT'].includes(error.message)) {
+    if (
+      error instanceof Error &&
+      ['ROOM_NOT_FOUND', 'PLAYER_NOT_FOUND', 'NOT_YOUR_TURN', 'NO_SKIPS_LEFT', 'CANNOT_REFUSE_FORCED_TURN'].includes(
+        error.message
+      )
+    ) {
       throw error;
     }
+    handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomCode}`);
+  }
+}
+
+export async function useGoldCard(roomCode: string): Promise<void> {
+  const { auth: firebaseAuth, db: firestore } = requireFirebase();
+  const user = firebaseAuth.currentUser;
+  if (!user) throw new Error('AUTH_REQUIRED');
+  const roomRef = doc(firestore, 'rooms', roomCode);
+  const playerRef = doc(firestore, 'rooms', roomCode, 'players', user.uid);
+
+  try {
+    await runTransaction(firestore, async (tx) => {
+      const roomSnap = await tx.get(roomRef);
+      if (!roomSnap.exists()) throw new Error('ROOM_NOT_FOUND');
+      const room = roomSnap.data() as RoomDoc;
+      if (room.status !== 'playing') return;
+      if (room.turnMode !== 'normal') throw new Error('CANNOT_REFUSE_FORCED_TURN');
+      if (room.activePlayerId !== user.uid) throw new Error('NOT_YOUR_TURN');
+
+      const stayForSecond = (room.turnQuestionsRemaining ?? 1) === 2;
+      let nextIndex = room.currentTurnIndex;
+      let nextRound = room.currentRound;
+      if (!stayForSecond) {
+        nextIndex = room.currentTurnIndex + 1;
+        if (nextIndex >= room.playerOrder.length) {
+          nextIndex = 0;
+          nextRound += 1;
+        }
+      }
+
+      const nextActiveUid = room.playerOrder[nextIndex];
+      const nextPlayerRef =
+        nextActiveUid && nextActiveUid !== user.uid
+          ? doc(firestore, 'rooms', roomCode, 'players', nextActiveUid)
+          : null;
+
+      const [playerSnap, nextSnap] = await Promise.all([
+        tx.get(playerRef),
+        nextPlayerRef ? tx.get(nextPlayerRef) : Promise.resolve(null),
+      ]);
+      if (!playerSnap.exists()) throw new Error('PLAYER_NOT_FOUND');
+      const player = playerSnap.data() as RoomPlayerDoc;
+      if ((player.goldCards ?? 0) < 1) throw new Error('NO_GOLD_CARD');
+
+      const nextTotalTurns = room.totalTurnsCompleted + 1;
+      const isComplete =
+        room.gameMode === 'rounds'
+          ? nextRound > room.roundsCount
+          : room.usedQuestionIds.length >= TOTAL_QUESTIONS_COUNT;
+      const nextNonce = room.turnNonce + 1;
+      const goldEvent: CardEvent = {
+        nonce: nextNonce,
+        type: 'gold',
+        cardId: 'gold',
+        actorUid: player.uid,
+        actorName: player.name,
+        targetUid: null,
+        targetName: null,
+      };
+
+      tx.update(playerRef, {
+        goldCards: player.goldCards - 1,
+        lastSeenAt: serverTimestamp(),
+      });
+
+      if (isComplete) {
+        tx.update(roomRef, {
+          status: 'finished',
+          currentTurnIndex: 0,
+          currentRound: Math.min(room.currentRound, room.roundsCount),
+          totalTurnsCompleted: nextTotalTurns,
+          currentQuestionId: null,
+          activePlayerId: null,
+          turnNonce: nextNonce,
+          turnQuestionsRemaining: 1,
+          lastCardEvent: goldEvent,
+          updatedAt: serverTimestamp(),
+        });
+        return;
+      }
+
+      const nextQ = drawRandomUnusedQuestionId(room.usedQuestionIds);
+      if (nextQ === null) {
+        tx.update(roomRef, {
+          status: 'exhausted',
+          currentTurnIndex: nextIndex,
+          currentRound: Math.min(nextRound, 31),
+          totalTurnsCompleted: nextTotalTurns,
+          currentQuestionId: null,
+          activePlayerId: null,
+          turnNonce: nextNonce,
+          turnQuestionsRemaining: 1,
+          lastCardEvent: goldEvent,
+          updatedAt: serverTimestamp(),
+        });
+        return;
+      }
+
+      const incomingPlayer = nextSnap?.exists() ? (nextSnap.data() as RoomPlayerDoc) : null;
+      let nextTurnQuestionsRemaining = 1;
+      if (!stayForSecond && incomingPlayer?.pendingDoubleTurn && !incomingPlayer?.doublePenaltyUsed && nextPlayerRef) {
+        nextTurnQuestionsRemaining = 2;
+        tx.update(nextPlayerRef, { pendingDoubleTurn: false, doublePenaltyUsed: true });
+      }
+
+      tx.update(roomRef, {
+        status: 'playing',
+        currentTurnIndex: nextIndex,
+        currentRound: Math.min(nextRound, 31),
+        totalTurnsCompleted: nextTotalTurns,
+        currentQuestionId: nextQ,
+        usedQuestionIds: [...room.usedQuestionIds, nextQ],
+        activePlayerId: nextActiveUid,
+        turnNonce: nextNonce,
+        turnQuestionsRemaining: nextTurnQuestionsRemaining,
+        lastCardEvent: goldEvent,
+        updatedAt: serverTimestamp(),
+      });
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomCode}`);
+  }
+}
+
+export async function useSwitchCard(roomCode: string, targetUid: string): Promise<void> {
+  const { auth: firebaseAuth, db: firestore } = requireFirebase();
+  const user = firebaseAuth.currentUser;
+  if (!user || targetUid === user.uid) return;
+  const roomRef = doc(firestore, 'rooms', roomCode);
+  const playerRef = doc(firestore, 'rooms', roomCode, 'players', user.uid);
+  const targetRef = doc(firestore, 'rooms', roomCode, 'players', targetUid);
+
+  try {
+    await runTransaction(firestore, async (tx) => {
+      const [roomSnap, playerSnap, targetSnap] = await Promise.all([
+        tx.get(roomRef),
+        tx.get(playerRef),
+        tx.get(targetRef),
+      ]);
+      if (!roomSnap.exists() || !playerSnap.exists() || !targetSnap.exists()) return;
+      const room = roomSnap.data() as RoomDoc;
+      const player = playerSnap.data() as RoomPlayerDoc;
+      const target = targetSnap.data() as RoomPlayerDoc;
+      if (room.status !== 'playing' || room.turnMode !== 'normal' || room.activePlayerId !== user.uid) return;
+      if ((player.switchCards ?? 0) < 1) return;
+
+      const nextNonce = room.turnNonce + 1;
+      tx.update(playerRef, { switchCards: player.switchCards - 1, lastSeenAt: serverTimestamp() });
+      tx.update(roomRef, {
+        turnMode: 'switch_pending',
+        switchSourceId: user.uid,
+        switchTargetId: targetUid,
+        activePlayerId: targetUid,
+        turnNonce: nextNonce,
+        lastCardEvent: {
+          nonce: nextNonce,
+          type: 'switch',
+          cardId: 'switch',
+          actorUid: player.uid,
+          actorName: player.name,
+          targetUid: target.uid,
+          targetName: target.name,
+        },
+        updatedAt: serverTimestamp(),
+      });
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomCode}`);
+  }
+}
+
+export async function useAntiSwitchCard(roomCode: string): Promise<void> {
+  const { auth: firebaseAuth, db: firestore } = requireFirebase();
+  const user = firebaseAuth.currentUser;
+  if (!user) return;
+  const roomRef = doc(firestore, 'rooms', roomCode);
+  const myRef = doc(firestore, 'rooms', roomCode, 'players', user.uid);
+
+  try {
+    await runTransaction(firestore, async (tx) => {
+      const roomSnap = await tx.get(roomRef);
+      if (!roomSnap.exists()) return;
+      const room = roomSnap.data() as RoomDoc;
+      if (room.status !== 'playing' || room.turnMode !== 'switch_pending' || room.switchTargetId !== user.uid || !room.switchSourceId) {
+        return;
+      }
+      const sourceRef = doc(firestore, 'rooms', roomCode, 'players', room.switchSourceId);
+      const [mySnap, sourceSnap] = await Promise.all([tx.get(myRef), tx.get(sourceRef)]);
+      if (!mySnap.exists()) return;
+      const myPlayer = mySnap.data() as RoomPlayerDoc;
+      if ((myPlayer.antiSwitchCards ?? 0) < 1) return;
+      const sourceName = sourceSnap.exists() ? (sourceSnap.data() as RoomPlayerDoc).name : '';
+
+      const nextNonce = room.turnNonce + 1;
+      tx.update(myRef, { antiSwitchCards: myPlayer.antiSwitchCards - 1, lastSeenAt: serverTimestamp() });
+      tx.update(roomRef, {
+        turnMode: 'anti_switch_forced',
+        switchTargetId: null,
+        activePlayerId: room.switchSourceId,
+        turnNonce: nextNonce,
+        lastCardEvent: {
+          nonce: nextNonce,
+          type: 'anti_switch',
+          cardId: 'anti_switch',
+          actorUid: myPlayer.uid,
+          actorName: myPlayer.name,
+          targetUid: room.switchSourceId,
+          targetName: sourceName,
+        },
+        updatedAt: serverTimestamp(),
+      });
+    });
+  } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomCode}`);
   }
 }
@@ -571,7 +1066,12 @@ export async function leaveMultiplayerRoom(roomCode: string): Promise<void> {
       const tooFew = room.status === 'playing' && nextOrder.length < 2;
       const nextIndex = room.currentTurnIndex >= nextOrder.length ? 0 : room.currentTurnIndex;
       const nextStatus = tooFew ? 'finished' : room.status;
-      const nextActive = nextStatus === 'playing' ? nextOrder[nextIndex] : null;
+      const clearSwitch =
+        tooFew ||
+        room.switchSourceId === user.uid ||
+        room.switchTargetId === user.uid ||
+        room.activePlayerId === user.uid;
+      const nextActive = nextStatus === 'playing' ? (clearSwitch ? nextOrder[nextIndex] : room.activePlayerId) : null;
       const nextQ = tooFew ? null : room.currentQuestionId;
 
       if (isLeavingHost) tx.update(nextHostRef, { isHost: true });
@@ -582,6 +1082,10 @@ export async function leaveMultiplayerRoom(roomCode: string): Promise<void> {
         currentTurnIndex: nextIndex,
         activePlayerId: nextActive,
         currentQuestionId: nextQ,
+        turnQuestionsRemaining: clearSwitch ? 1 : (room.turnQuestionsRemaining ?? 1),
+        turnMode: clearSwitch ? 'normal' : room.turnMode,
+        switchSourceId: clearSwitch ? null : room.switchSourceId,
+        switchTargetId: clearSwitch ? null : room.switchTargetId,
         turnNonce: room.turnNonce + 1,
         status: nextStatus,
         updatedAt: serverTimestamp(),
@@ -632,6 +1136,134 @@ export async function setPlayerConnectionState(roomCode: string, connected: bool
   } catch {
     // ignore transient errors
   }
+}
+
+export async function setPlayerVoiceState(
+  roomCode: string,
+  voiceJoined: boolean,
+  micMuted: boolean
+): Promise<void> {
+  if (!isFirebaseConfigured || !auth || !db) return;
+  const user = auth.currentUser;
+  if (!user) return;
+  try {
+    await updateDoc(doc(db, 'rooms', roomCode, 'players', user.uid), {
+      voiceJoined,
+      micMuted,
+      lastSeenAt: serverTimestamp(),
+    });
+  } catch {
+    // ignore
+  }
+}
+
+export async function sendRoomChatMessage(
+  roomCode: string,
+  senderName: string,
+  text: string,
+  memberIds: string[]
+): Promise<void> {
+  if (!isFirebaseConfigured || !auth || !db) return;
+  const user = auth.currentUser;
+  if (!user) return;
+  const cleanText = text.trim().slice(0, 500);
+  if (!cleanText) return;
+  const cleanName = (senderName || 'Player').trim().slice(0, 24) || 'Player';
+  const safeMembers = Array.from(new Set([user.uid, ...memberIds])).slice(0, 12);
+  try {
+    await addDoc(collection(db, 'rooms', roomCode, 'messages'), {
+      senderId: user.uid,
+      senderName: cleanName,
+      text: cleanText,
+      memberIds: safeMembers,
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `rooms/${roomCode}/messages`);
+  }
+}
+
+export function subscribeToRoomMessages(
+  roomCode: string,
+  myUid: string,
+  onMessages: (messages: RoomChatMessage[]) => void
+): Unsubscribe {
+  if (!isFirebaseConfigured || !db || !myUid) return () => {};
+  const q = query(
+    collection(db, 'rooms', roomCode, 'messages'),
+    where('memberIds', 'array-contains', myUid)
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list: RoomChatMessage[] = snap.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as Omit<RoomChatMessage, 'id'>),
+      }));
+      list.sort(
+        (a, b) =>
+          (a.createdAt?.toMillis?.() ?? Number.MAX_SAFE_INTEGER) -
+          (b.createdAt?.toMillis?.() ?? Number.MAX_SAFE_INTEGER)
+      );
+      onMessages(list.slice(-100));
+    },
+    () => {}
+  );
+}
+
+export async function sendVoiceSignal(
+  roomCode: string,
+  toUid: string,
+  type: 'offer' | 'answer' | 'ice',
+  payload: string
+): Promise<void> {
+  if (!isFirebaseConfigured || !auth || !db) return;
+  const user = auth.currentUser;
+  if (!user || !toUid || toUid === user.uid) return;
+  try {
+    await addDoc(collection(db, 'rooms', roomCode, 'voiceSignals'), {
+      fromUid: user.uid,
+      toUid,
+      type,
+      payload: payload.slice(0, 16384),
+      createdAt: serverTimestamp(),
+    });
+  } catch {
+    // ignore
+  }
+}
+
+export async function deleteVoiceSignal(roomCode: string, signalId: string): Promise<void> {
+  if (!isFirebaseConfigured || !db) return;
+  try {
+    await deleteDoc(doc(db, 'rooms', roomCode, 'voiceSignals', signalId));
+  } catch {
+    // ignore
+  }
+}
+
+export function subscribeToVoiceSignals(
+  roomCode: string,
+  myUid: string,
+  onSignals: (signals: VoiceSignalDoc[]) => void
+): Unsubscribe {
+  if (!isFirebaseConfigured || !db || !myUid) return () => {};
+  const q = query(
+    collection(db, 'rooms', roomCode, 'voiceSignals'),
+    where('toUid', '==', myUid)
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      const items: VoiceSignalDoc[] = snap.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as Omit<VoiceSignalDoc, 'id'>),
+      }));
+      items.sort((a, b) => (a.createdAt?.toMillis?.() ?? 0) - (b.createdAt?.toMillis?.() ?? 0));
+      onSignals(items);
+    },
+    () => {}
+  );
 }
 
 export function subscribeToRoomAndPlayers(

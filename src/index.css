@@ -6,11 +6,18 @@
     --font-ar: 'Cairo', system-ui, -apple-system, sans-serif;
     --font-en: 'Outfit', system-ui, -apple-system, sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+    --bg-ivory: #FBF7F0;
+    --bg-cream: #FFFDF9;
+    --bg-beige: #F3EBDD;
+    --ink-brown: #231A15;
+    --ink-taupe: #6E5E50;
+    --accent-brown: #8B5E3C;
+    --border-warm: #DDD2C0;
   }
 
   html {
-    background-color: #060913;
-    color: #f1f5f9;
+    background-color: #FBF7F0;
+    color: #231A15;
     font-family: var(--font-ar);
     -webkit-tap-highlight-color: transparent;
   }
@@ -22,7 +29,8 @@
   body {
     min-height: 100dvh;
     overflow-x: hidden;
-    background-color: #060913;
+    background-color: #FBF7F0;
+    color: #231A15;
   }
 }
 
@@ -39,21 +47,27 @@
   padding-bottom: max(1rem, env(safe-area-inset-bottom));
 }
 
+/* Subtle tactile paper grain overlay using inline SVG noise */
+.paper-grain {
+  background-image: radial-gradient(rgba(35, 26, 21, 0.03) 1px, transparent 0);
+  background-size: 18px 18px;
+}
+
 @keyframes floatSlow {
   0%, 100% {
-    transform: translate3d(0, 0, 0) scale(1);
+    transform: translate3d(0, 0, 0) rotate(0deg);
   }
   50% {
-    transform: translate3d(18px, -14px, 0) scale(1.04);
+    transform: translate3d(6px, -8px, 0) rotate(2deg);
   }
 }
 
 @keyframes floatReverse {
   0%, 100% {
-    transform: translate3d(0, 0, 0) scale(1);
+    transform: translate3d(0, 0, 0) rotate(0deg);
   }
   50% {
-    transform: translate3d(-16px, 16px, 0) scale(1.05);
+    transform: translate3d(-6px, 8px, 0) rotate(-2deg);
   }
 }
 

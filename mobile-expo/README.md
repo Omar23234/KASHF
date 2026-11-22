@@ -1,4 +1,4 @@
-# KASHF | كَشْف — React Native + Expo Android APK Project
+# من غير كلام | Men Gheir Kalam — React Native + Expo Android APK Project
 
 This directory contains the standalone React Native + Expo + TypeScript Android application configured to build a directly installable **Android `.apk`** using **EAS Build** (no Expo Go required).
 
@@ -47,7 +47,7 @@ When asked during `eas build` whether to generate a new Android Keystore, choose
 
 ### What you get when the build finishes (~5–10 minutes):
 - A **direct `.apk` download URL** in your terminal (and in your [expo.dev](https://expo.dev) dashboard) plus a QR code.
-- Download the `.apk` to your computer or directly on your Android phone, tap it, allow **"Install unknown apps"** if Android asks, and launch **KASHF | كَشْف**.
+- Download the `.apk` to your computer or directly on your Android phone, tap it, allow **"Install unknown apps"** if Android asks, and launch **من غير كلام | Men Gheir Kalam**.
 
 ### Updating future versions
 1. Update `expo.version` and increment `expo.android.versionCode` in `app.json`.

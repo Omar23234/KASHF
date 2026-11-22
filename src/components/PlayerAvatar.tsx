@@ -26,9 +26,13 @@ export const PlayerAvatar: React.FC<PlayerAvatarProps> = ({
 
   return (
     <div
-      className={`relative shrink-0 rounded-2xl bg-gradient-to-br ${gradient} flex items-center justify-center font-bold text-white shadow-lg transition-transform duration-200 ${
+      className={`relative shrink-0 rounded-2xl bg-gradient-to-br ${gradient} flex items-center justify-center font-bold text-[#FFFDF9] shadow-sm transition-transform duration-200 ${
         SIZE_CLASSES[size]
-      } ${active ? 'ring-2 ring-blue-400 ring-offset-2 ring-offset-[#080C1B] scale-105' : 'border border-white/15'}`}
+      } ${
+        active
+          ? 'ring-2 ring-[#8B5E3C] ring-offset-2 ring-offset-[#FBF7F0] scale-105'
+          : 'border border-[#231A15]/15'
+      }`}
     >
       <span className="tracking-tight select-none">{initials}</span>
     </div>

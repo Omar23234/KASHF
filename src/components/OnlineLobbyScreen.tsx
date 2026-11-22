@@ -6,6 +6,8 @@ import {
   Layers,
   Loader2,
   LogOut,
+  Mic,
+  MicOff,
   Play,
   Share2,
   ShieldAlert,
@@ -26,9 +28,11 @@ import {
   subscribeToRoomAndPlayers,
   updateLobbySettings,
 } from '../firebase/multiplayerService';
+import { useWebRTCVoiceChat } from '../hooks/useWebRTCVoiceChat';
 import type { RoomDoc, RoomPlayerDoc } from '../types/game';
 import { soundFX } from '../utils/sound';
 import { PlayerAvatar } from './PlayerAvatar';
+import { RoomChatVoicePanel } from './RoomChatVoicePanel';
 
 export const OnlineLobbyScreen: React.FC = () => {
   const { language, t, soundEnabled, activeRoomCode, setActiveRoomCode, setScreen, authUser } =
@@ -39,6 +43,13 @@ export const OnlineLobbyScreen: React.FC = () => {
   const [copied, setCopied] = useState(false);
   const [starting, setStarting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+
+  const voice = useWebRTCVoiceChat({
+    roomCode: activeRoomCode,
+    myUid: authUser?.uid ?? '',
+    players,
+    playerOrder: room?.playerOrder ?? [],
+  });
 
   useEffect(() => {
     if (!activeRoomCode) {
@@ -112,8 +123,8 @@ export const OnlineLobbyScreen: React.FC = () => {
   if (loading || !room) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-3 py-20">
-        <Loader2 className="w-8 h-8 text-blue-400 animate-spin" />
-        <p className="text-sm text-slate-300">{t.connectingAuth}</p>
+        <Loader2 className="w-8 h-8 text-[#8B5E3C] animate-spin" />
+        <p className="text-sm font-medium text-[#6E5E50]">{t.connectingAuth}</p>
       </div>
     );
   }
@@ -176,6 +187,7 @@ export const OnlineLobbyScreen: React.FC = () => {
 
   const handleLeave = async () => {
     soundFX.tap(soundEnabled);
+    await voice.leaveVoice();
     await leaveMultiplayerRoom(room.roomCode);
     setActiveRoomCode(null);
     setScreen('home');
@@ -184,15 +196,15 @@ export const OnlineLobbyScreen: React.FC = () => {
   return (
     <div className="flex-1 flex flex-col gap-6 pb-24">
       {/* Room Code Hero Card */}
-      <section className="rounded-3xl bg-gradient-to-br from-[#0F1734] via-[#0B1022] to-[#13112E] border border-blue-400/25 p-6 sm:p-8 shadow-2xl">
+      <section className="rounded-3xl bg-[#FFFDF9] border-2 border-[#D5C7B2] p-6 sm:p-8 shadow-[0_12px_30px_-14px_rgba(35,26,21,0.14)]">
         <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
           <div className="space-y-2 text-center md:text-start">
-            <p className="text-xs sm:text-sm font-semibold text-blue-300">
+            <p className="text-xs sm:text-sm font-bold text-[#8B5E3C]">
               {t.lobbyTitle} · {t.shareCodePrompt}
             </p>
             <div
               dir="ltr"
-              className="text-4xl sm:text-5xl font-mono-tabular font-extrabold tracking-[0.25em] text-white select-all"
+              className="text-4xl sm:text-5xl font-mono-tabular font-extrabold tracking-[0.25em] text-[#231A15] select-all"
             >
               {room.roomCode}
             </div>
@@ -202,16 +214,16 @@ export const OnlineLobbyScreen: React.FC = () => {
             <button
               type="button"
               onClick={handleCopyCode}
-              className="min-h-[46px] px-5 py-2.5 rounded-2xl bg-white/8 hover:bg-white/15 border border-white/15 text-sm font-bold text-white flex items-center gap-2 transition cursor-pointer"
+              className="min-h-[46px] px-5 py-2.5 rounded-2xl bg-[#EFE6D6] hover:bg-[#E5DAC5] border border-[#D5C7B2] text-sm font-bold text-[#231A15] flex items-center gap-2 transition cursor-pointer"
             >
-              {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4 text-blue-400" />}
+              {copied ? <Check className="w-4 h-4 text-[#4A6B46]" /> : <Copy className="w-4 h-4 text-[#8B5E3C]" />}
               <span>{copied ? t.codeCopied : t.copyCode}</span>
             </button>
 
             <button
               type="button"
               onClick={handleShareRoom}
-              className="min-h-[46px] px-5 py-2.5 rounded-2xl bg-blue-600/25 hover:bg-blue-600/35 border border-blue-400/35 text-sm font-bold text-blue-100 flex items-center gap-2 transition cursor-pointer"
+              className="min-h-[46px] px-5 py-2.5 rounded-2xl bg-[#231A15] hover:bg-[#3A2C24] text-sm font-bold text-[#FBF7F0] flex items-center gap-2 transition cursor-pointer"
             >
               <Share2 className="w-4 h-4" />
               <span>{t.shareRoom}</span>
@@ -220,38 +232,69 @@ export const OnlineLobbyScreen: React.FC = () => {
         </div>
       </section>
 
+      {/* Live Voice & Text Chat Bar */}
+      <RoomChatVoicePanel
+        roomCode={room.roomCode}
+        myUid={authUser?.uid ?? ''}
+        myName={players[authUser?.uid ?? '']?.name ?? ''}
+        memberIds={room.playerOrder}
+        players={players}
+        voiceJoined={voice.voiceJoined}
+        micMuted={voice.micMuted}
+        voiceError={voice.voiceError}
+        speakingUids={voice.speakingUids}
+        onJoinVoice={() => void voice.joinVoice()}
+        onLeaveVoice={() => void voice.leaveVoice()}
+        onToggleMute={() => void voice.toggleMute()}
+      />
+
       {/* Two-Column Lobby Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Players List */}
-        <section className="lg:col-span-7 rounded-3xl bg-[#0C1226]/95 border border-white/10 p-5 sm:p-6 space-y-4">
-          <div className="flex items-center justify-between gap-4 border-b border-white/8 pb-3">
-            <h2 className="text-lg font-bold text-white">{t.playersCountLabel}</h2>
-            <span className="text-sm font-mono-tabular font-bold text-blue-300">
+        <section className="lg:col-span-7 rounded-3xl bg-[#FFFDF9] border border-[#DDD2C0] p-5 sm:p-6 space-y-4 shadow-[0_8px_24px_-14px_rgba(35,26,21,0.1)]">
+          <div className="flex items-center justify-between gap-4 border-b border-[#E8DEC8] pb-3">
+            <h2 className="text-lg font-bold text-[#231A15]">{t.playersCountLabel}</h2>
+            <span className="text-sm font-mono-tabular font-extrabold text-[#8B5E3C]">
               {room.playerOrder.length} / 12
             </span>
           </div>
 
-          <ul className="divide-y divide-white/8">
+          <ul className="divide-y divide-[#EFE6D6]">
             {room.playerOrder.map((pid) => {
               const p = players[pid];
               if (!p) return null;
               const isMe = pid === authUser?.uid;
+              const isSpeaking = Boolean(voice.speakingUids[pid]);
               return (
                 <li key={pid} className="py-3 flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
-                    <PlayerAvatar name={p.name} paletteId={p.avatarColor} size="md" active={p.isHost} />
+                    <PlayerAvatar name={p.name} paletteId={p.avatarColor} size="md" active={p.isHost || isSpeaking} />
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-bold text-white truncate">{p.name}</span>
+                        <span className="font-bold text-[#231A15] truncate">{p.name}</span>
                         {isMe && (
-                          <span className="text-xs font-semibold text-blue-300">
+                          <span className="text-xs font-bold text-[#8B5E3C]">
                             ({t.youBadge})
                           </span>
                         )}
+                        {p.voiceJoined && (
+                          <span
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold border ${
+                              p.micMuted
+                                ? 'bg-[#F9EAE6] border-[#D9A79D] text-[#9B3B30]'
+                                : isSpeaking
+                                  ? 'bg-[#EEF3EC] border-[#96B590] text-[#355432]'
+                                  : 'bg-[#F3EBDD] border-[#D5C7B2] text-[#6E5E50]'
+                            }`}
+                          >
+                            {p.micMuted ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3" />}
+                            {p.micMuted ? t.micMutedLabel : isSpeaking ? t.speakingLabel : t.micLiveLabel}
+                          </span>
+                        )}
                       </div>
-                      <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5">
+                      <div className="flex items-center gap-2 text-xs text-[#6E5E50] mt-0.5">
                         {p.isHost && (
-                          <span className="inline-flex items-center gap-1 text-amber-300 font-semibold">
+                          <span className="inline-flex items-center gap-1 text-[#8C6820] font-bold">
                             <Crown className="w-3.5 h-3.5" />
                             {t.hostBadge}
                           </span>
@@ -259,7 +302,7 @@ export const OnlineLobbyScreen: React.FC = () => {
                         {p.isHost && <span aria-hidden="true">·</span>}
                         <span
                           className={`inline-flex items-center gap-1 ${
-                            p.connected ? 'text-emerald-400' : 'text-slate-500'
+                            p.connected ? 'text-[#4A6B46] font-semibold' : 'text-[#9C8D7E]'
                           }`}
                         >
                           {p.connected ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
@@ -276,7 +319,7 @@ export const OnlineLobbyScreen: React.FC = () => {
                         soundFX.tap(soundEnabled);
                         void kickPlayerFromLobby(room.roomCode, pid);
                       }}
-                      className="min-h-[40px] px-3 rounded-xl text-xs font-semibold text-rose-300 hover:bg-rose-500/15 border border-rose-500/20 flex items-center gap-1.5 transition cursor-pointer shrink-0"
+                      className="min-h-[40px] px-3 rounded-xl text-xs font-bold text-[#9B3B30] hover:bg-[#F9EAE6] border border-[#E2BDB5] flex items-center gap-1.5 transition cursor-pointer shrink-0"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                       <span>{t.removePlayer}</span>
@@ -288,22 +331,21 @@ export const OnlineLobbyScreen: React.FC = () => {
           </ul>
 
           {room.playerOrder.length < 2 && (
-            <p className="text-xs sm:text-sm text-amber-300/90 pt-1">{t.minPlayersWarning}</p>
+            <p className="text-xs sm:text-sm text-[#8C6820] font-semibold pt-1">{t.minPlayersWarning}</p>
           )}
         </section>
 
         {/* Game Length & Match Settings */}
-        <section className="lg:col-span-5 rounded-3xl bg-[#0C1226]/95 border border-white/10 p-5 sm:p-6 space-y-5">
-          <div className="border-b border-white/8 pb-3">
-            <h2 className="text-lg font-bold text-white">{t.gameSettingsTitle}</h2>
+        <section className="lg:col-span-5 rounded-3xl bg-[#FFFDF9] border border-[#DDD2C0] p-5 sm:p-6 space-y-5 shadow-[0_8px_24px_-14px_rgba(35,26,21,0.1)]">
+          <div className="border-b border-[#E8DEC8] pb-3">
+            <h2 className="text-lg font-bold text-[#231A15]">{t.gameSettingsTitle}</h2>
           </div>
 
           <div className="space-y-4">
-            {/* Option A vs Option B */}
             <div className="space-y-2">
-              <span className="text-xs font-semibold text-slate-400">{t.gameLengthLabel}</span>
+              <span className="text-xs font-bold text-[#6E5E50]">{t.gameLengthLabel}</span>
               {isHost ? (
-                <div className="grid grid-cols-2 gap-2 p-1 rounded-2xl bg-[#070B18] border border-white/12">
+                <div className="grid grid-cols-2 gap-2 p-1 rounded-2xl bg-[#F3EBDD] border border-[#DDD2C0]">
                   <button
                     type="button"
                     onClick={() => {
@@ -315,8 +357,8 @@ export const OnlineLobbyScreen: React.FC = () => {
                     }}
                     className={`min-h-[42px] px-3 rounded-xl text-xs font-bold transition cursor-pointer ${
                       room.gameMode === 'rounds'
-                        ? 'bg-blue-600 text-white'
-                        : 'text-slate-400 hover:text-white'
+                        ? 'bg-[#231A15] text-[#FBF7F0]'
+                        : 'text-[#6E5E50] hover:text-[#231A15]'
                     }`}
                   >
                     {t.roundsModeOption}
@@ -329,8 +371,8 @@ export const OnlineLobbyScreen: React.FC = () => {
                     }}
                     className={`min-h-[42px] px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
                       room.gameMode === 'all_questions'
-                        ? 'bg-violet-600 text-white'
-                        : 'text-slate-400 hover:text-white'
+                        ? 'bg-[#8B5E3C] text-[#FBF7F0]'
+                        : 'text-[#6E5E50] hover:text-[#231A15]'
                     }`}
                   >
                     <Layers className="w-3.5 h-3.5 shrink-0" />
@@ -338,7 +380,7 @@ export const OnlineLobbyScreen: React.FC = () => {
                   </button>
                 </div>
               ) : (
-                <p className="text-sm font-bold text-blue-300">
+                <p className="text-sm font-bold text-[#8B5E3C]">
                   {room.gameMode === 'all_questions' ? t.allQuestionsOption : t.roundsModeOption}
                 </p>
               )}
@@ -347,8 +389,8 @@ export const OnlineLobbyScreen: React.FC = () => {
             {room.gameMode === 'rounds' ? (
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-sm">
-                  <span className="font-semibold text-slate-200">{t.roundsLabel}</span>
-                  <span className="font-mono-tabular font-bold text-blue-300">
+                  <span className="font-bold text-[#231A15]">{t.roundsLabel}</span>
+                  <span className="font-mono-tabular font-bold text-[#8B5E3C]">
                     {effectiveRounds} {t.roundUnit}
                   </span>
                 </div>
@@ -363,7 +405,7 @@ export const OnlineLobbyScreen: React.FC = () => {
                           roundsCount: Math.max(1, effectiveRounds - 1),
                         });
                       }}
-                      className="flex-1 min-h-[44px] rounded-xl bg-white/8 hover:bg-white/15 text-white font-bold disabled:opacity-35 cursor-pointer"
+                      className="flex-1 min-h-[44px] rounded-xl bg-[#EFE6D6] hover:bg-[#E5DAC5] border border-[#D5C7B2] text-[#231A15] font-bold disabled:opacity-35 cursor-pointer"
                     >
                       −
                     </button>
@@ -376,29 +418,29 @@ export const OnlineLobbyScreen: React.FC = () => {
                           roundsCount: Math.min(maxRounds, effectiveRounds + 1),
                         });
                       }}
-                      className="flex-1 min-h-[44px] rounded-xl bg-white/8 hover:bg-white/15 text-white font-bold disabled:opacity-35 cursor-pointer"
+                      className="flex-1 min-h-[44px] rounded-xl bg-[#EFE6D6] hover:bg-[#E5DAC5] border border-[#D5C7B2] text-[#231A15] font-bold disabled:opacity-35 cursor-pointer"
                     >
                       +
                     </button>
                   </div>
                 )}
-                <p className="text-xs text-slate-400 tabular-nums">
+                <p className="text-xs text-[#6E5E50] tabular-nums">
                   {t.turnsTotalHint} {Math.max(2, room.playerOrder.length)} × {effectiveRounds} ={' '}
                   {Math.max(2, room.playerOrder.length) * effectiveRounds} / {TOTAL_QUESTIONS_COUNT}{' '}
                   {t.turnUnit} ({t.maxRoundsHint} {maxRounds})
                 </p>
               </div>
             ) : (
-              <div className="rounded-2xl bg-violet-600/12 border border-violet-400/25 p-3.5 space-y-1">
-                <p className="text-xs font-bold text-violet-200">
+              <div className="rounded-2xl bg-[#F3EBDD] border border-[#D5C7B2] p-3.5 space-y-1">
+                <p className="text-xs font-bold text-[#231A15]">
                   {t.allQuestionsOption} ({TOTAL_QUESTIONS_COUNT} {t.turnUnit})
                 </p>
-                <p className="text-xs text-slate-300 leading-relaxed">{t.allQuestionsHint}</p>
+                <p className="text-xs text-[#5E4F43] leading-relaxed">{t.allQuestionsHint}</p>
               </div>
             )}
 
-            <div className="flex items-center justify-between gap-4 py-2 border-t border-white/8">
-              <span className="text-sm font-semibold text-slate-200">{t.randomFirstPlayer}</span>
+            <div className="flex items-center justify-between gap-4 py-2 border-t border-[#E8DEC8]">
+              <span className="text-sm font-bold text-[#231A15]">{t.randomFirstPlayer}</span>
               {isHost ? (
                 <button
                   type="button"
@@ -410,14 +452,14 @@ export const OnlineLobbyScreen: React.FC = () => {
                   }}
                   className={`min-h-[40px] px-4 rounded-xl text-xs font-bold border transition cursor-pointer ${
                     room.randomFirstPlayer
-                      ? 'bg-blue-600/25 border-blue-400/40 text-blue-200'
-                      : 'bg-white/5 border-white/10 text-slate-400'
+                      ? 'bg-[#231A15] border-[#231A15] text-[#FBF7F0]'
+                      : 'bg-[#F3EBDD] border-[#D5C7B2] text-[#6E5E50]'
                   }`}
                 >
                   {room.randomFirstPlayer ? (language === 'ar' ? 'مفعّل' : 'On') : (language === 'ar' ? 'مغلق' : 'Off')}
                 </button>
               ) : (
-                <span className="text-xs font-semibold text-slate-400">
+                <span className="text-xs font-bold text-[#6E5E50]">
                   {room.randomFirstPlayer ? (language === 'ar' ? 'مفعّل' : 'On') : (language === 'ar' ? 'مغلق' : 'Off')}
                 </span>
               )}
@@ -430,7 +472,7 @@ export const OnlineLobbyScreen: React.FC = () => {
                   soundFX.tap(soundEnabled);
                   void claimDisconnectedHost(room.roomCode);
                 }}
-                className="w-full min-h-[44px] px-4 rounded-2xl bg-amber-500/15 border border-amber-400/35 text-amber-200 text-xs font-bold flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full min-h-[44px] px-4 rounded-2xl bg-[#FBF5E4] border border-[#D7BD7B] text-[#7D5D18] text-xs font-bold flex items-center justify-center gap-2 cursor-pointer"
               >
                 <ShieldAlert className="w-4 h-4 shrink-0" />
                 <span>{t.claimHost}</span>
@@ -440,26 +482,26 @@ export const OnlineLobbyScreen: React.FC = () => {
             <button
               type="button"
               onClick={handleLeave}
-              className="w-full min-h-[44px] px-4 rounded-2xl bg-white/5 hover:bg-rose-500/15 border border-white/10 hover:border-rose-500/30 text-slate-300 hover:text-rose-200 text-sm font-semibold flex items-center justify-center gap-2 transition cursor-pointer"
+              className="w-full min-h-[44px] px-4 rounded-2xl bg-[#EFE6D6] hover:bg-[#F9EAE6] border border-[#D5C7B2] hover:border-[#C88172] text-[#5E4F43] hover:text-[#9B3B30] text-sm font-bold flex items-center justify-center gap-2 transition cursor-pointer"
             >
               <LogOut className="w-4 h-4" />
               <span>{t.leaveRoom}</span>
             </button>
           </div>
 
-          {errorMsg && <p className="text-sm text-rose-400 font-semibold">{errorMsg}</p>}
+          {errorMsg && <p className="text-sm text-[#9B3B30] font-bold">{errorMsg}</p>}
         </section>
       </div>
 
       {/* Bottom Sticky Action Bar */}
-      <div className="fixed bottom-0 inset-x-0 z-30 bg-[#060913]/92 backdrop-blur-md border-t border-white/10 p-3 pb-safe">
+      <div className="fixed bottom-0 inset-x-0 z-30 bg-[#F6EFE3]/95 backdrop-blur-md border-t border-[#DDD2C0] p-3 pb-safe">
         <div className="max-w-5xl mx-auto">
           {isHost ? (
             <button
               type="button"
               disabled={!canStart || starting}
               onClick={handleStartGame}
-              className="w-full min-h-[50px] rounded-2xl bg-gradient-to-r from-blue-600 to-violet-600 text-white font-extrabold text-base flex items-center justify-center gap-2 shadow-lg shadow-blue-700/30 hover:brightness-110 transition cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
+              className="w-full min-h-[50px] rounded-2xl bg-[#231A15] hover:bg-[#3A2C24] text-[#FBF7F0] font-extrabold text-base flex items-center justify-center gap-2 shadow-md transition cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
             >
               {starting ? (
                 <Loader2 className="w-5 h-5 animate-spin" />
@@ -469,7 +511,7 @@ export const OnlineLobbyScreen: React.FC = () => {
               <span>{t.startGame}</span>
             </button>
           ) : (
-            <div className="min-h-[46px] flex items-center justify-center text-sm font-semibold text-slate-300">
+            <div className="min-h-[46px] flex items-center justify-center text-sm font-bold text-[#6E5E50]">
               {t.waitingForHost}
             </div>
           )}
