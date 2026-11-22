@@ -10,14 +10,14 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#FBF7F0"
+      "backgroundColor": "#F3F0EB"
     },
     "android": {
       "package": "com.kashf.party",
       "versionCode": 1,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#FBF7F0"
+        "backgroundColor": "#F3F0EB"
       },
       "permissions": [
         "INTERNET",

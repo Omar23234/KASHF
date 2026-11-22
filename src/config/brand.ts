@@ -3,7 +3,7 @@ export const BRAND_CONFIG = {
   nameEn: 'Men Gheir Kalam',
   taglineAr: 'قعدة صراحة وأسئلة من القلب',
   taglineEn: 'Real talk. No filters.',
-  iconUrl: '/icon.svg',
+  iconUrl: '/app-icon.png',
 } as const;
 
 export const AVATAR_PALETTES = [

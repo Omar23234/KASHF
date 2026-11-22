@@ -1365,12 +1365,21 @@ export default function App() {
                             <Text style={styles.cardCornerLabel}>{t.questionCardLabel}</Text>
                             <Text style={styles.cardCornerMark}>؟</Text>
                           </View>
-                          {isMyTurn && q ? (
+                          {q ? (
                             <View style={{ gap: 12, alignItems: 'center', paddingVertical: 14 }}>
-                              <Text style={styles.bonusPill}>{t.answerBonusBadge}</Text>
+                              {isMyTurn ? (
+                                <Text style={styles.bonusPill}>{t.answerBonusBadge}</Text>
+                              ) : (
+                                <Text style={styles.bonusPill}>
+                                  {t.activePlayerTurn}: {activePlayer?.name ?? '...'}
+                                </Text>
+                              )}
                               <Text style={[styles.questionText, dirText]}>{q.text}</Text>
                               {q.isGroupPrompt && (
                                 <Text style={[styles.groupNoteText, dirText]}>{t.groupPromptNote}</Text>
+                              )}
+                              {!isMyTurn && (
+                                <Text style={[styles.waitingText, dirText]}>{t.waitingTurnDesc}</Text>
                               )}
                             </View>
                           ) : (

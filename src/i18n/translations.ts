@@ -122,7 +122,7 @@ export const TRANSLATIONS = {
     // How to Play
     howToPlayTitle: 'قواعد لعبة من غير كلام',
     ruleOnlineTitle: 'الأونلاين (كل واحد على موبايله)',
-    ruleOnlineBody: 'الهوست ينشئ غرفة بكود من 6 رموز ويشاركه مع من 2 إلى 12 صديق بدون تسجيل دخول. كل دور يظهر السؤال على شاشة اللاعب صاحب الدور فقط، والباقي يشاهدون شاشة الانتظار. لكل لاعب 3 تخطيات مستقلة طوال اللعبة.',
+    ruleOnlineBody: 'الهوست ينشئ غرفة بكود من 6 رموز ويشاركه مع من 2 إلى 12 صديق بدون تسجيل دخول. السؤال يظهر على شاشات كل اللاعبين في الغرفة في نفس الوقت، واللاعب صاحب الدور هو اللي يجاوب أو يتحكم في التخطي والكروت. لكل لاعب 3 تخطيات مستقلة طوال اللعبة.',
     ruleSingleTitle: 'موبايل واحد (بدون إنترنت)',
     ruleSingleBody: 'أدخل أسماء من 2 إلى 12 لاعب، اختر عدد الجولات أو العب كل الأسئلة (63 سؤالاً)، والعبوا فوراً بدون إنترنت. لا يوجد زر تخطي نهائياً في هذا الوضع.',
     ruleQuestionsTitle: 'بنك الـ 63 سؤال الرسمي',
@@ -320,7 +320,7 @@ export const TRANSLATIONS = {
     singlePhoneNextRule: 'Answer out loud, then tap Next Question',
     howToPlayTitle: 'How to Play Men Gheir Kalam',
     ruleOnlineTitle: 'Online Multiplayer',
-    ruleOnlineBody: 'The host creates a unique 6-character room code for 2–12 players. Only the active player sees the question card on their device while others wait. Each player gets strictly 3 independent skips per game.',
+    ruleOnlineBody: 'The host creates a unique 6-character room code for 2–12 players. Everyone in the room sees the active question on their screen while the turn player answers and controls Next/Skip/Cards. Each player gets strictly 3 independent skips per game.',
     ruleSingleTitle: 'Single Phone Mode (Offline)',
     ruleSingleBody: 'Add 2–12 players, pick the number of rounds, and play offline on one device. There is NO skip button or skip option in Single Phone Mode.',
     ruleQuestionsTitle: '63 Official Questions',

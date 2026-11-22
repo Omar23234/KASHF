@@ -564,9 +564,9 @@ export const OnlineGameScreen: React.FC = () => {
             switchSourceName={switchSourceName}
           />
 
-          {/* Paper-Style Question Card (Active Player) OR Waiting Card (Other Players) */}
+          {/* Paper-Style Question Card (Visible to ALL Players in the Online Room) */}
           <AnimatePresence mode="wait">
-            {isMyTurn && currentQuestion ? (
+            {currentQuestion ? (
               <motion.div
                 key={`q-${room.turnNonce}-${currentQuestion.id}`}
                 initial={{ opacity: 0, y: 14, scale: 0.98 }}
@@ -583,7 +583,13 @@ export const OnlineGameScreen: React.FC = () => {
                       <span>{t.questionCardLabel}</span>
                     </span>
                     <div className="flex items-center gap-2">
-                      <span className="text-[#4A6B46] font-extrabold">{t.answerBonusBadge}</span>
+                      {isMyTurn ? (
+                        <span className="text-[#4A6B46] font-extrabold">{t.answerBonusBadge}</span>
+                      ) : (
+                        <span className="text-[#8B5E3C] font-bold">
+                          {t.activePlayerTurn}: {activePlayer?.name ?? '...'}
+                        </span>
+                      )}
                       <span className="font-mono-tabular text-[#9C8D7E]">#{currentQuestion.id}</span>
                     </div>
                   </div>
@@ -597,16 +603,27 @@ export const OnlineGameScreen: React.FC = () => {
                     </p>
                   </div>
 
-                  <div className="min-h-[24px] flex items-center justify-between gap-2 text-xs text-[#8B5E3C]">
-                    <span aria-hidden="true" className="font-extrabold text-base opacity-60">؟</span>
-                    {currentQuestion.isGroupPrompt ? (
-                      <p className="text-xs sm:text-sm text-[#6F492E] font-bold text-center">
-                        {t.groupPromptNote}
+                  <div className="min-h-[24px] flex flex-col items-center justify-center gap-2 text-xs text-[#8B5E3C]">
+                    <div className="w-full flex items-center justify-between gap-2">
+                      <span aria-hidden="true" className="font-extrabold text-base opacity-60">؟</span>
+                      {currentQuestion.isGroupPrompt ? (
+                        <p className="text-xs sm:text-sm text-[#6F492E] font-bold text-center">
+                          {t.groupPromptNote}
+                        </p>
+                      ) : !isMyTurn ? (
+                        <p className="text-xs sm:text-sm text-[#6E5E50] font-semibold text-center">
+                          {t.waitingTurnDesc}
+                        </p>
+                      ) : (
+                        <span />
+                      )}
+                      <span aria-hidden="true" className="font-extrabold text-base opacity-60">✦</span>
+                    </div>
+                    {currentQuestion.isGroupPrompt && !isMyTurn && (
+                      <p className="text-xs text-[#6E5E50] font-medium text-center">
+                        {t.waitingTurnDesc}
                       </p>
-                    ) : (
-                      <span />
                     )}
-                    <span aria-hidden="true" className="font-extrabold text-base opacity-60">✦</span>
                   </div>
                 </div>
               </motion.div>
@@ -620,23 +637,8 @@ export const OnlineGameScreen: React.FC = () => {
                 className="relative flex-1 min-h-[270px] sm:min-h-[340px] rounded-3xl border-2 border-[#DDD2C0] bg-[#F3EBDD]/85 p-4 sm:p-5 flex flex-col shadow-[0_12px_28px_-14px_rgba(35,26,21,0.1)]"
               >
                 <div className="flex-1 rounded-2xl border border-dashed border-[#C8B9A3] p-6 sm:p-8 flex flex-col items-center justify-center text-center gap-4">
-                  {activePlayer && (
-                    <PlayerAvatar
-                      name={activePlayer.name}
-                      paletteId={activePlayer.avatarColor}
-                      size="xl"
-                      active
-                    />
-                  )}
-                  <div className="space-y-1.5 max-w-md">
-                    <p className="text-xs font-bold text-[#8B5E3C]">{t.activePlayerTurn}</p>
-                    <h3 className="text-2xl sm:text-3xl font-extrabold text-[#231A15]">
-                      {activePlayer?.name ?? '...'}
-                    </h3>
-                    <p className="text-sm text-[#5E4F43] leading-relaxed pt-1">
-                      {t.waitingTurnDesc}
-                    </p>
-                  </div>
+                  <Loader2 className="w-7 h-7 text-[#8B5E3C] animate-spin" />
+                  <p className="text-sm text-[#5E4F43] font-semibold">{t.waitingTurnDesc}</p>
                 </div>
               </motion.div>
             )}
