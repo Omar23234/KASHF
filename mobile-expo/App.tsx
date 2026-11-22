@@ -19,6 +19,7 @@ import {
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { onAuthStateChanged, type User } from 'firebase/auth';
+import { MobileChatModal } from './src/components/MobileChatModal';
 import {
   getQuestionById,
   TOTAL_QUESTIONS_COUNT,
@@ -38,10 +39,10 @@ import {
   kickPlayerFromLobby,
   leaveMultiplayerRoom,
   saveActiveRoom,
-  sendRoomChatMessage,
   setPlayerConnectionState,
   skipTurnQuestion,
   startOrRestartMultiplayerGame,
+  subscribeToMyStickers,
   subscribeToRoomAndPlayers,
   subscribeToRoomMessages,
   updateLobbySettings,
@@ -49,10 +50,16 @@ import {
   useGoldCard,
   useSwitchCard,
   type GameLengthMode,
+  type PersonalSticker,
   type RoomChatMessage,
   type RoomDoc,
   type RoomPlayerDoc,
 } from './src/services/multiplayerService';
+import {
+  createEmptySinglePhoneChatState,
+  loadSinglePhoneChatState,
+  type SinglePhoneChatStoreState,
+} from './src/utils/singlePhoneChatStore';
 import {
   answerSinglePhoneQuestion,
   createSinglePhoneGame,
@@ -108,12 +115,16 @@ export default function App() {
   const [doubleSkipNotice, setDoubleSkipNotice] = useState(false);
   const [dismissedOnlineAwardNonce, setDismissedOnlineAwardNonce] = useState(0);
 
-  // Collapsible Room Text Chat state
+  // Collapsible Room Text Chat, Stickers & Emojis state (Online & Single Phone)
   const [chatOpen, setChatOpen] = useState(false);
+  const [chatMode, setChatMode] = useState<'online' | 'single_phone'>('online');
   const [chatMessages, setChatMessages] = useState<RoomChatMessage[]>([]);
+  const [onlineMyStickers, setOnlineMyStickers] = useState<PersonalSticker[]>([]);
+  const [spChatState, setSpChatState] = useState<SinglePhoneChatStoreState>(() =>
+    createEmptySinglePhoneChatState()
+  );
+  const [spChatSenderId, setSpChatSenderId] = useState('sp-1');
   const [unreadChatCount, setUnreadChatCount] = useState(0);
-  const [chatDraft, setChatDraft] = useState('');
-  const [chatSending, setChatSending] = useState(false);
   const seenMsgCountRef = useRef(0);
   const chatOpenRef = useRef(false);
   chatOpenRef.current = chatOpen;
@@ -173,6 +184,7 @@ export default function App() {
         }
       }
     });
+    loadSinglePhoneChatState().then(setSpChatState).catch(() => {});
     return () => unsub();
   }, []);
 
@@ -275,12 +287,22 @@ export default function App() {
     return () => unsub();
   }, [activeRoomCode, myUid]);
 
+  // Personal Sticker Collection Listener (persists across rooms for signed-in UID)
   useEffect(() => {
-    if (chatOpen) {
+    if (!myUid) {
+      setOnlineMyStickers([]);
+      return;
+    }
+    const unsub = subscribeToMyStickers(myUid, setOnlineMyStickers);
+    return () => unsub();
+  }, [myUid]);
+
+  useEffect(() => {
+    if (chatOpen && chatMode === 'online') {
       seenMsgCountRef.current = chatMessages.length;
       setUnreadChatCount(0);
     }
-  }, [chatOpen, chatMessages.length]);
+  }, [chatOpen, chatMode, chatMessages.length]);
 
   const hapticTap = () => {
     if (soundEnabled) Haptics.selectionAsync().catch(() => {});
@@ -352,19 +374,6 @@ export default function App() {
       else setErrorMsg(t.errGeneric);
     } finally {
       setSubmitting(false);
-    }
-  };
-
-  const handleSendChat = async () => {
-    if (!room || !chatDraft.trim() || chatSending) return;
-    const text = chatDraft.trim();
-    setChatSending(true);
-    setChatDraft('');
-    try {
-      const myName = players[myUid]?.name || displayName || 'Player';
-      await sendRoomChatMessage(room.roomCode, myName, text, room.playerOrder);
-    } finally {
-      setChatSending(false);
     }
   };
 
@@ -474,6 +483,7 @@ export default function App() {
           <TouchableOpacity
             onPress={() => {
               hapticTap();
+              setChatMode('online');
               setChatOpen(true);
             }}
             style={styles.chatToggleBtn}
@@ -1853,6 +1863,41 @@ export default function App() {
                         </View>
                       )}
 
+                      <View style={styles.cardCompact}>
+                        <View
+                          style={[
+                            styles.rowBetweenWrap,
+                            { flexDirection: isRTL ? 'row-reverse' : 'row' },
+                          ]}
+                        >
+                          <Text style={[styles.voiceTitle, dirText]}>{t.offlineChatTitle}</Text>
+                          <TouchableOpacity
+                            onPress={() => {
+                              hapticTap();
+                              setSpChatSenderId(
+                                activePlayer?.id ?? singleGame.players[0]?.id ?? 'sp-1'
+                              );
+                              setChatMode('single_phone');
+                              setChatOpen(true);
+                            }}
+                            style={styles.chatToggleBtn}
+                          >
+                            <Text style={styles.chatToggleText}>
+                              {t.chatTabMessages} · {t.chatTabStickers}
+                            </Text>
+                            {spChatState.messages.length > 0 && (
+                              <View style={styles.unreadBadge}>
+                                <Text style={styles.unreadBadgeText}>
+                                  {spChatState.messages.length > 99
+                                    ? '99+'
+                                    : spChatState.messages.length}
+                                </Text>
+                              </View>
+                            )}
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+
                       <View style={styles.card}>
                         <View style={[styles.rowBetweenWrap, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
                           <View>
@@ -2175,80 +2220,26 @@ export default function App() {
           </View>
         </Modal>
 
-        {/* Collapsible Room Text Chat Modal */}
-        <Modal
+        {/* Room & Single Phone Chat, Personal Stickers & Emoji Picker Modal */}
+        <MobileChatModal
           visible={chatOpen}
-          transparent
-          animationType="slide"
-          onRequestClose={() => setChatOpen(false)}
-        >
-          <View style={styles.modalBackdrop}>
-            <View style={styles.chatModalCard}>
-              <View style={[styles.rowBetweenWrap, { paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: '#E8DEC8' }]}>
-                <Text style={styles.cardTitle}>{t.chatTitle}</Text>
-                <TouchableOpacity onPress={() => setChatOpen(false)} style={styles.editBtn}>
-                  <Text style={styles.editBtnText}>{t.close}</Text>
-                </TouchableOpacity>
-              </View>
-
-              <ScrollView style={{ flex: 1, marginVertical: 10 }}>
-                {chatMessages.length === 0 ? (
-                  <Text style={[styles.mutedText, { textAlign: 'center', marginTop: 24 }]}>
-                    {t.noMessagesYet}
-                  </Text>
-                ) : (
-                  chatMessages.map((m) => {
-                    const isMe = m.senderId === myUid;
-                    const timeStr = m.createdAt?.toDate
-                      ? m.createdAt.toDate().toLocaleTimeString(language === 'ar' ? 'ar-EG' : 'en-US', {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })
-                      : '...';
-                    return (
-                      <View
-                        key={m.id}
-                        style={[
-                          styles.chatBubbleWrap,
-                          { alignItems: isMe ? 'flex-end' : 'flex-start' },
-                        ]}
-                      >
-                        <Text style={styles.mutedSmall}>
-                          {m.senderName} · {timeStr}
-                        </Text>
-                        <View style={[styles.chatBubble, isMe ? styles.chatBubbleMe : styles.chatBubbleOther]}>
-                          <Text
-                            style={isMe ? styles.chatBubbleTextMe : styles.chatBubbleTextOther}
-                          >
-                            {m.text}
-                          </Text>
-                        </View>
-                      </View>
-                    );
-                  })
-                )}
-              </ScrollView>
-
-              <View style={styles.rowGap}>
-                <TextInput
-                  value={chatDraft}
-                  onChangeText={setChatDraft}
-                  maxLength={500}
-                  placeholder={t.chatPlaceholder}
-                  placeholderTextColor="#9C8D7E"
-                  style={[styles.input, { flex: 1 }, dirText]}
-                />
-                <TouchableOpacity
-                  disabled={!chatDraft.trim() || chatSending}
-                  onPress={() => void handleSendChat()}
-                  style={[styles.smallPrimaryBtn, (!chatDraft.trim() || chatSending) && styles.disabledBtn]}
-                >
-                  <Text style={styles.primaryBtnText}>{t.sendMsgBtn}</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-        </Modal>
+          onClose={() => setChatOpen(false)}
+          mode={chatMode}
+          language={language}
+          t={t}
+          roomCode={room?.roomCode}
+          myUid={myUid}
+          myName={players[myUid]?.name || displayName || 'Player'}
+          memberIds={room?.playerOrder ?? []}
+          singlePlayers={singleGame?.players ?? singlePlayers}
+          spSenderId={spChatSenderId}
+          onChangeSpSender={setSpChatSenderId}
+          onlineMessages={chatMessages}
+          onlineMyStickers={onlineMyStickers}
+          spState={spChatState}
+          onUpdateSpState={(updater) => setSpChatState((prev) => updater(prev))}
+          onHapticTap={hapticTap}
+        />
       </SafeAreaView>
     </SafeAreaProvider>
   );

@@ -6,16 +6,19 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
   query,
   runTransaction,
   serverTimestamp,
+  setDoc,
   Timestamp,
   updateDoc,
   where,
   writeBatch,
   type Unsubscribe,
 } from 'firebase/firestore';
+import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
 import { drawRandomUnusedQuestionId, shuffleArray, TOTAL_QUESTIONS_COUNT } from '../data/questions';
 import {
   auth,
@@ -23,6 +26,7 @@ import {
   handleFirestoreError,
   isFirebaseConfigured,
   OperationType,
+  storage,
   testConnection,
 } from '../firebase/config';
 import type { Language } from '../i18n/translations';
@@ -98,6 +102,26 @@ export interface RoomChatMessage {
   text: string;
   memberIds: string[];
   createdAt: Timestamp | null;
+  messageType?: 'text' | 'sticker';
+  stickerId?: string;
+  stickerUrl?: string;
+  stickerStoragePath?: string;
+  stickerCreatorId?: string;
+  stickerCreatorName?: string;
+  stickerContentHash?: string;
+}
+
+export interface PersonalSticker {
+  stickerId: string;
+  ownerId: string;
+  creatorUid: string;
+  creatorName: string;
+  imageUrl: string;
+  storagePath: string;
+  contentHash: string;
+  isSavedFromOther: boolean;
+  createdAt?: Timestamp | null;
+  createdAtMs?: number;
 }
 
 export interface VoiceSignalDoc {
@@ -1209,6 +1233,207 @@ export function subscribeToRoomMessages(
     },
     () => {}
   );
+}
+
+export async function sendRoomStickerMessage(
+  roomCode: string,
+  senderName: string,
+  sticker: PersonalSticker,
+  memberIds: string[]
+): Promise<void> {
+  if (!isFirebaseConfigured || !auth || !db) return;
+  const user = auth.currentUser;
+  if (!user) return;
+  if (!sticker.imageUrl.startsWith('https://')) {
+    throw new Error('INVALID_STICKER_URL');
+  }
+  const cleanName = (senderName || 'Player').trim().slice(0, 24) || 'Player';
+  const cleanCreatorName = (sticker.creatorName || cleanName).trim().slice(0, 24) || 'Player';
+  const safeMembers = Array.from(new Set([user.uid, ...memberIds])).slice(0, 12);
+  try {
+    await addDoc(collection(db, 'rooms', roomCode, 'messages'), {
+      senderId: user.uid,
+      senderName: cleanName,
+      text: '[Sticker]',
+      memberIds: safeMembers,
+      messageType: 'sticker',
+      stickerId: sticker.stickerId,
+      stickerUrl: sticker.imageUrl,
+      stickerStoragePath: sticker.storagePath,
+      stickerCreatorId: sticker.creatorUid,
+      stickerCreatorName: cleanCreatorName,
+      stickerContentHash: sticker.contentHash,
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `rooms/${roomCode}/messages`);
+  }
+}
+
+export function subscribeToMyStickers(
+  myUid: string,
+  onStickers: (stickers: PersonalSticker[]) => void
+): Unsubscribe {
+  if (!isFirebaseConfigured || !db || !myUid) {
+    onStickers([]);
+    return () => {};
+  }
+  const q = query(
+    collection(db, 'playerStickers', myUid, 'items'),
+    where('ownerId', '==', myUid)
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list: PersonalSticker[] = snap.docs.map((d) => d.data() as PersonalSticker);
+      list.sort(
+        (a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0)
+      );
+      onStickers(list);
+    },
+    () => {}
+  );
+}
+
+export async function uploadPersonalSticker(params: {
+  uri: string;
+  mimeType: string;
+  extension: 'png' | 'webp' | 'jpg';
+  contentHash: string;
+  creatorName: string;
+}): Promise<{ status: 'added' | 'already_exists'; sticker: PersonalSticker }> {
+  const { auth: firebaseAuth, db: firestore } = requireFirebase();
+  const user = firebaseAuth.currentUser;
+  if (!user || !storage) throw new Error('AUTH_REQUIRED');
+
+  const itemsCol = collection(firestore, 'playerStickers', user.uid, 'items');
+  try {
+    const dupSnap = await getDocs(
+      query(itemsCol, where('ownerId', '==', user.uid), where('contentHash', '==', params.contentHash))
+    );
+    if (!dupSnap.empty) {
+      return {
+        status: 'already_exists',
+        sticker: dupSnap.docs[0].data() as PersonalSticker,
+      };
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, `playerStickers/${user.uid}/items`);
+  }
+
+  const stickerId = `stk_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const path = `stickers/${user.uid}/${stickerId}.${params.extension}`;
+  const fileRef = storageRef(storage, path);
+
+  let downloadUrl = '';
+  try {
+    const resp = await fetch(params.uri);
+    const blob = await resp.blob();
+    await uploadBytes(fileRef, blob, {
+      contentType: params.mimeType,
+      cacheControl: 'public,max-age=31536000',
+    });
+    downloadUrl = await getDownloadURL(fileRef);
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code ?? '';
+    const msg = err instanceof Error ? err.message : String(err);
+    if (
+      code === 'storage/bucket-not-found' ||
+      code === 'storage/project-not-found' ||
+      code === 'storage/unauthorized' ||
+      code === 'storage/unknown' ||
+      msg.includes('404') ||
+      msg.includes('Not Found')
+    ) {
+      throw new Error('STICKER_STORAGE_UNAVAILABLE');
+    }
+    throw new Error('STICKER_UPLOAD_FAILED');
+  }
+
+  const cleanCreatorName = (params.creatorName || 'Player').trim().slice(0, 24) || 'Player';
+  const record: PersonalSticker = {
+    stickerId,
+    ownerId: user.uid,
+    creatorUid: user.uid,
+    creatorName: cleanCreatorName,
+    imageUrl: downloadUrl,
+    storagePath: path,
+    contentHash: params.contentHash,
+    isSavedFromOther: false,
+    createdAt: null,
+  };
+
+  try {
+    await setDoc(doc(firestore, 'playerStickers', user.uid, 'items', stickerId), {
+      ...record,
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `playerStickers/${user.uid}/items/${stickerId}`);
+  }
+
+  return { status: 'added', sticker: record };
+}
+
+export async function saveStickerToMyCollection(params: {
+  stickerId: string;
+  imageUrl: string;
+  storagePath: string;
+  contentHash: string;
+  creatorUid: string;
+  creatorName: string;
+}): Promise<'saved' | 'already_exists'> {
+  const { auth: firebaseAuth, db: firestore } = requireFirebase();
+  const user = firebaseAuth.currentUser;
+  if (!user) throw new Error('AUTH_REQUIRED');
+  if (!params.imageUrl.startsWith('https://')) {
+    throw new Error('INVALID_STICKER_URL');
+  }
+
+  const targetRef = doc(firestore, 'playerStickers', user.uid, 'items', params.stickerId);
+  try {
+    const existingIdSnap = await getDoc(targetRef);
+    if (existingIdSnap.exists()) {
+      return 'already_exists';
+    }
+    const dupHashSnap = await getDocs(
+      query(
+        collection(firestore, 'playerStickers', user.uid, 'items'),
+        where('ownerId', '==', user.uid),
+        where('contentHash', '==', params.contentHash)
+      )
+    );
+    if (!dupHashSnap.empty) {
+      return 'already_exists';
+    }
+
+    const cleanCreatorName = (params.creatorName || 'Player').trim().slice(0, 24) || 'Player';
+    await setDoc(targetRef, {
+      stickerId: params.stickerId,
+      ownerId: user.uid,
+      creatorUid: params.creatorUid,
+      creatorName: cleanCreatorName,
+      imageUrl: params.imageUrl,
+      storagePath: params.storagePath,
+      contentHash: params.contentHash,
+      isSavedFromOther: params.creatorUid !== user.uid,
+      createdAt: serverTimestamp(),
+    });
+    return 'saved';
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `playerStickers/${user.uid}/items/${params.stickerId}`);
+  }
+}
+
+export async function deletePersonalSticker(stickerId: string): Promise<void> {
+  if (!isFirebaseConfigured || !auth || !db) return;
+  const user = auth.currentUser;
+  if (!user) return;
+  try {
+    await deleteDoc(doc(db, 'playerStickers', user.uid, 'items', stickerId));
+  } catch {
+    // ignore
+  }
 }
 
 export async function sendVoiceSignal(

@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getApps, initializeApp, type FirebaseApp } from 'firebase/app';
 import { getAuth, initializeAuth, type Auth } from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore, type Firestore } from 'firebase/firestore';
+import { getStorage, type FirebaseStorage } from 'firebase/storage';
 import firebaseAppletConfig from '../../firebase-applet-config.json';
 
 interface ResolvedFirebaseConfig {
@@ -50,6 +51,7 @@ export const isFirebaseConfigured: boolean =
 let appInstance: FirebaseApp | null = null;
 let authInstance: Auth | null = null;
 let dbInstance: Firestore | null = null;
+let storageInstance: FirebaseStorage | null = null;
 let initError: string | null = null;
 
 if (isFirebaseConfigured) {
@@ -77,10 +79,12 @@ if (isFirebaseConfigured) {
     dbInstance = resolvedConfig.firestoreDatabaseId
       ? getFirestore(appInstance, resolvedConfig.firestoreDatabaseId)
       : getFirestore(appInstance);
+    storageInstance = getStorage(appInstance);
   } catch (err) {
     initError = err instanceof Error ? err.message : String(err);
     authInstance = null;
     dbInstance = null;
+    storageInstance = null;
   }
 } else {
   initError = 'FIREBASE_CONFIG_MISSING';
@@ -89,6 +93,7 @@ if (isFirebaseConfigured) {
 export const firebaseApp = appInstance;
 export const auth = authInstance;
 export const db = dbInstance;
+export const storage = storageInstance;
 export const firebaseInitError = initError;
 
 export enum OperationType {

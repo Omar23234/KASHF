@@ -156,4 +156,22 @@ export const DIRTY_DOZEN_CASES = [
     expected: 'PERMISSION_DENIED',
     enforcedBy: 'voiceSignals create -> isRoomMember(roomId) && incoming().fromUid == request.auth.uid',
   },
+  {
+    id: 18,
+    name: 'Base64 Image Injection in Firestore Sticker',
+    path: '/playerStickers/p1/items/st_1',
+    operation: 'create',
+    payload: { stickerId: 'st_1', ownerId: 'p1', imageUrl: 'data:image/png;base64,AAA' },
+    expected: 'PERMISSION_DENIED',
+    enforcedBy: 'isValidPersonalSticker -> data.imageUrl.matches("^https://.*")',
+  },
+  {
+    id: 19,
+    name: 'Cross-Owner Sticker Collection Access',
+    path: '/playerStickers/victim-uid/items/st_1',
+    operation: 'list',
+    payload: null,
+    expected: 'PERMISSION_DENIED',
+    enforcedBy: 'playerStickers items -> playerId == request.auth.uid && resource.data.ownerId == request.auth.uid',
+  },
 ] as const;

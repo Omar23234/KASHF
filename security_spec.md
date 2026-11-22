@@ -15,8 +15,9 @@
    - Switch Card (`switchCards >= 1`, `turnMode == 'normal'`): owner only, target must be another room player (`target != uid`), consumes 1 Switch Card, sets `turnMode = 'switch_pending'`.
    - Anti-Switch Card (`antiSwitchCards >= 1`, `turnMode == 'switch_pending'`, `switchTargetId == uid`): target owner only, consumes 1 Anti-Switch Card, sets `turnMode = 'anti_switch_forced'` returning question to `switchSourceId` who cannot skip or Gold Card out.
 6. **Turn Race Protection & Question Non-Repetition**: Every turn or card transition increments `turnNonce` by 1. Every drawn `currentQuestionId` is an integer `1..63` not previously in `usedQuestionIds`.
-7. **Room-Scoped Text Chat & Ephemeral Voice Signaling**:
-   - `/rooms/{roomId}/messages/{messageId}` can only be created by room members (`isRoomMember(roomId)`) with `senderId == request.auth.uid` and `text` 1..500 chars; reads require `request.auth.uid in resource.data.memberIds` (or `isRoomMember` on `get`).
+7. **Room-Scoped Text/Sticker Chat & Ephemeral Voice Signaling**:
+   - `/rooms/{roomId}/messages/{messageId}` can only be created by room members (`isRoomMember(roomId)`) with `senderId == request.auth.uid` and either text (1..500 chars) or sticker metadata pointing strictly to an `https://` Firebase Storage download URL (never raw/base64 image payloads); reads require `request.auth.uid in resource.data.memberIds` (or `isRoomMember` on `get`).
+   - `/playerStickers/{playerId}/items/{stickerId}` is strictly isolated to `playerId == request.auth.uid && ownerId == request.auth.uid`, preserving `creatorUid`/`creatorName` and requiring an `https://` Storage URL (never `data:` URIs).
    - `/rooms/{roomId}/voiceSignals/{signalId}` stores only SDP/ICE strings (never audio), writable only by room members with `fromUid == request.auth.uid` and readable/deletable only by `fromUid` or `toUid`.
 8. **Terminal State Lock & Server Temporal Integrity**: Closed rooms deny updates. Timestamps (`createdAt`, `updatedAt`, `joinedAt`, `lastSeenAt`) must equal `request.time`.
 
@@ -38,3 +39,5 @@
 15. **Refusing Anti-Switch Forced Turn**: Player under `turnMode == 'anti_switch_forced'` attempts `Skip` or `Gold Card` -> `PERMISSION_DENIED`.
 16. **Unauthorized Chat Read/Write**: Non-member creates or queries `/rooms/ABC234/messages` -> `PERMISSION_DENIED`.
 17. **Voice Signal Spoofing**: User writes `/rooms/ABC234/voiceSignals` with `fromUid != request.auth.uid` -> `PERMISSION_DENIED`.
+18. **Raw Image / Base64 Data-URI Injection in Firestore**: User submits `imageUrl: 'data:image/png;base64,...'` to `/playerStickers` or `/messages` -> `PERMISSION_DENIED`.
+19. **Cross-Owner Sticker Collection Read/Write**: User attempts to read or write `/playerStickers/other-uid/items/s1` -> `PERMISSION_DENIED`.

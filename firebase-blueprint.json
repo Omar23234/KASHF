@@ -277,7 +277,7 @@
     },
     "RoomChatMessage": {
       "title": "RoomChatMessage",
-      "description": "Real-time text chat message scoped to a single multiplayer room.",
+      "description": "Real-time text, emoji, or sticker chat message scoped to a single multiplayer room.",
       "type": "object",
       "properties": {
         "senderId": {
@@ -295,9 +295,52 @@
         },
         "text": {
           "type": "string",
-          "description": "Chat message content.",
+          "description": "Chat message content or sticker caption placeholder.",
           "minLength": 1,
           "maxLength": 500
+        },
+        "messageType": {
+          "type": "string",
+          "description": "Message kind: text (default) or sticker.",
+          "enum": ["text", "sticker"]
+        },
+        "stickerId": {
+          "type": "string",
+          "description": "Canonical sticker identifier when messageType is sticker.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "stickerUrl": {
+          "type": "string",
+          "description": "HTTPS Firebase Storage download URL of the sticker image.",
+          "minLength": 10,
+          "maxLength": 2048
+        },
+        "stickerStoragePath": {
+          "type": "string",
+          "description": "Firebase Storage object path for the sticker image.",
+          "minLength": 3,
+          "maxLength": 512
+        },
+        "stickerCreatorId": {
+          "type": "string",
+          "description": "Original creator UID of the sticker.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "stickerCreatorName": {
+          "type": "string",
+          "description": "Original creator display name associated with the sticker.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "stickerContentHash": {
+          "type": "string",
+          "description": "SHA-256 content hash used for duplicate prevention.",
+          "minLength": 8,
+          "maxLength": 128
         },
         "memberIds": {
           "type": "array",
@@ -310,6 +353,78 @@
         }
       },
       "required": ["senderId", "senderName", "text", "memberIds", "createdAt"]
+    },
+    "PersonalSticker": {
+      "title": "PersonalSticker",
+      "description": "Personal or saved sticker metadata entry owned by a player (image binary stored in Firebase Storage).",
+      "type": "object",
+      "properties": {
+        "stickerId": {
+          "type": "string",
+          "description": "Canonical sticker ID matching the document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the player who owns/saved this sticker entry.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "creatorUid": {
+          "type": "string",
+          "description": "Original creator Firebase Auth UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "creatorName": {
+          "type": "string",
+          "description": "Original creator display name preserved when others save the sticker.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "HTTPS Firebase Storage download URL of the compressed sticker image.",
+          "minLength": 10,
+          "maxLength": 2048
+        },
+        "storagePath": {
+          "type": "string",
+          "description": "Firebase Storage path of the sticker image.",
+          "minLength": 3,
+          "maxLength": 512
+        },
+        "contentHash": {
+          "type": "string",
+          "description": "Content digest for duplicate detection.",
+          "minLength": 8,
+          "maxLength": 128
+        },
+        "isSavedFromOther": {
+          "type": "boolean",
+          "description": "True when saved from another player's chat message."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when added to the player's collection."
+        }
+      },
+      "required": [
+        "stickerId",
+        "ownerId",
+        "creatorUid",
+        "creatorName",
+        "imageUrl",
+        "storagePath",
+        "contentHash",
+        "isSavedFromOther",
+        "createdAt"
+      ]
     },
     "VoiceSignal": {
       "title": "VoiceSignal",
@@ -367,13 +482,19 @@
       "schema": {
         "$ref": "#/entities/RoomChatMessage"
       },
-      "description": "Real-time text chat messages scoped strictly to room members."
+      "description": "Real-time text, emoji, and sticker chat messages scoped strictly to room members."
     },
     "/rooms/{roomId}/voiceSignals/{signalId}": {
       "schema": {
         "$ref": "#/entities/VoiceSignal"
       },
       "description": "Ephemeral WebRTC peer signaling packets for live room voice chat."
+    },
+    "/playerStickers/{playerId}/items/{stickerId}": {
+      "schema": {
+        "$ref": "#/entities/PersonalSticker"
+      },
+      "description": "Personal and saved sticker metadata collections owned strictly by each player UID."
     }
   }
 }

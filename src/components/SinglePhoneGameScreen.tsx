@@ -6,6 +6,7 @@ import { getQuestionById, TOTAL_QUESTIONS_COUNT } from '../data/questions';
 import type { SinglePhoneGameState } from '../types/game';
 import { soundFX } from '../utils/sound';
 import { PlayerAvatar } from './PlayerAvatar';
+import { RoomChatVoicePanel } from './RoomChatVoicePanel';
 import {
   CardEventBanner,
   CardInventoryBar,
@@ -278,6 +279,13 @@ export const SinglePhoneGameScreen: React.FC<SinglePhoneGameScreenProps> = ({
         turnMode={game.turnMode}
         turnQuestionsRemaining={1}
         switchSourceName={switchSourceName}
+      />
+
+      {/* Offline Chat, Personal Stickers & Emoji Picker */}
+      <RoomChatVoicePanel
+        mode="single_phone"
+        singlePlayers={game.players}
+        activeSinglePlayerId={activePlayer?.id ?? game.players[0]?.id ?? 'sp-1'}
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch flex-1">

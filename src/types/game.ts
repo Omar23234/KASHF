@@ -78,6 +78,26 @@ export interface RoomChatMessage {
   text: string;
   memberIds: string[];
   createdAt: Timestamp | null;
+  messageType?: 'text' | 'sticker';
+  stickerId?: string;
+  stickerUrl?: string;
+  stickerStoragePath?: string;
+  stickerCreatorId?: string;
+  stickerCreatorName?: string;
+  stickerContentHash?: string;
+}
+
+export interface PersonalSticker {
+  stickerId: string;
+  ownerId: string;
+  creatorUid: string;
+  creatorName: string;
+  imageUrl: string;
+  storagePath: string;
+  contentHash: string;
+  isSavedFromOther: boolean;
+  createdAt?: Timestamp | null;
+  createdAtMs?: number;
 }
 
 export interface VoiceSignalDoc {
