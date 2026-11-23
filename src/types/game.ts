@@ -71,6 +71,16 @@ export interface RoomPlayerDoc {
   lastSeenAt: Timestamp;
 }
 
+export const REACTION_EMOJIS = ['❤️', '😂', '😮', '😢', '👍', '👎'] as const;
+export type ReactionEmoji = (typeof REACTION_EMOJIS)[number];
+
+export interface ChatReplyReference {
+  replyToMessageId: string;
+  replyToSenderName: string;
+  replyToPreviewText: string;
+  replyToType: 'text' | 'sticker' | 'voice';
+}
+
 export interface RoomChatMessage {
   id: string;
   senderId: string;
@@ -78,13 +88,32 @@ export interface RoomChatMessage {
   text: string;
   memberIds: string[];
   createdAt: Timestamp | null;
-  messageType?: 'text' | 'sticker';
+  messageType?: 'text' | 'sticker' | 'voice';
   stickerId?: string;
   stickerUrl?: string;
   stickerStoragePath?: string;
   stickerCreatorId?: string;
   stickerCreatorName?: string;
   stickerContentHash?: string;
+  audioUrl?: string;
+  audioStoragePath?: string;
+  audioDurationSec?: number;
+  audioMimeType?: string;
+  replyToMessageId?: string;
+  replyToSenderName?: string;
+  replyToPreviewText?: string;
+  replyToType?: 'text' | 'sticker' | 'voice';
+}
+
+export interface MessageReactionDoc {
+  id: string;
+  reactionId: string;
+  messageId: string;
+  userId: string;
+  userName: string;
+  emoji: ReactionEmoji;
+  memberIds: string[];
+  updatedAt: Timestamp | null;
 }
 
 export interface PersonalSticker {

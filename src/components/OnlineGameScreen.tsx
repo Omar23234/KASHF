@@ -33,6 +33,7 @@ import {
 } from '../firebase/multiplayerService';
 import { useWebRTCVoiceChat } from '../hooks/useWebRTCVoiceChat';
 import type { RoomDoc, RoomPlayerDoc } from '../types/game';
+import { formatMultiplayerError } from '../utils/errorMessages';
 import { soundFX } from '../utils/sound';
 import { PlayerAvatar } from './PlayerAvatar';
 import { RoomChatVoicePanel } from './RoomChatVoicePanel';
@@ -79,6 +80,12 @@ export const OnlineGameScreen: React.FC = () => {
           setScreen('home');
           return;
         }
+        if (authUser && !nextRoom.playerOrder.includes(authUser.uid)) {
+          saveActiveRoom(null);
+          setActiveRoomCode(null);
+          setScreen('online_entry');
+          return;
+        }
         if (nextRoom.status === 'waiting') {
           setRoom(nextRoom);
           setPlayers(nextPlayers);
@@ -103,7 +110,7 @@ export const OnlineGameScreen: React.FC = () => {
       },
       (err) => {
         setLoading(false);
-        setErrorMsg(err.message);
+        setErrorMsg(formatMultiplayerError(err, t));
       }
     );
 
@@ -172,7 +179,7 @@ export const OnlineGameScreen: React.FC = () => {
     try {
       await advanceTurnNextQuestion(room.roomCode);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : t.errGeneric);
+      setErrorMsg(formatMultiplayerError(err, t));
     } finally {
       setBusy(false);
     }
@@ -190,7 +197,7 @@ export const OnlineGameScreen: React.FC = () => {
         setDoubleSkipNotice(true);
       }
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : t.errGeneric);
+      setErrorMsg(formatMultiplayerError(err, t));
     } finally {
       setBusy(false);
     }
@@ -204,7 +211,7 @@ export const OnlineGameScreen: React.FC = () => {
     try {
       await useGoldCard(room.roomCode);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : t.errGeneric);
+      setErrorMsg(formatMultiplayerError(err, t));
     } finally {
       setBusy(false);
     }
@@ -218,7 +225,7 @@ export const OnlineGameScreen: React.FC = () => {
     try {
       await useSwitchCard(room.roomCode, targetUid);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : t.errGeneric);
+      setErrorMsg(formatMultiplayerError(err, t));
     } finally {
       setBusy(false);
     }
@@ -240,7 +247,7 @@ export const OnlineGameScreen: React.FC = () => {
     try {
       await useAntiSwitchCard(room.roomCode);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : t.errGeneric);
+      setErrorMsg(formatMultiplayerError(err, t));
     } finally {
       setBusy(false);
     }
@@ -256,7 +263,7 @@ export const OnlineGameScreen: React.FC = () => {
     try {
       await startOrRestartMultiplayerGame(room.roomCode);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : t.errGeneric);
+      setErrorMsg(formatMultiplayerError(err, t));
     } finally {
       setBusy(false);
     }
@@ -264,10 +271,15 @@ export const OnlineGameScreen: React.FC = () => {
 
   const handleReturnHome = async () => {
     soundFX.tap(soundEnabled);
-    await voice.leaveVoice();
-    await leaveMultiplayerRoom(room.roomCode);
-    setActiveRoomCode(null);
-    setScreen('home');
+    try {
+      await voice.leaveVoice();
+      await leaveMultiplayerRoom(room.roomCode);
+    } catch {
+      // still navigate home if network dropped
+    } finally {
+      setActiveRoomCode(null);
+      setScreen('home');
+    }
   };
 
   const sortedByScore = room.playerOrder
@@ -660,7 +672,12 @@ export const OnlineGameScreen: React.FC = () => {
           {!isHost && hostPlayer && !hostPlayer.connected && (
             <button
               type="button"
-              onClick={() => void claimDisconnectedHost(room.roomCode)}
+              onClick={() => {
+                setErrorMsg('');
+                void claimDisconnectedHost(room.roomCode).catch((err) =>
+                  setErrorMsg(formatMultiplayerError(err, t))
+                );
+              }}
               className="min-h-[44px] px-4 rounded-2xl bg-[#FBF5E4] hover:bg-[#F5E9C6] border border-[#D7BD7B] text-[#7D5D18] text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition cursor-pointer"
             >
               <ShieldAlert className="w-4 h-4 shrink-0" />

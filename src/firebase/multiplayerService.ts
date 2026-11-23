@@ -23,8 +23,11 @@ import { pickAvatarPalette } from '../config/brand';
 import { drawRandomUnusedQuestionId, shuffleArray, TOTAL_QUESTIONS_COUNT } from '../data/questions';
 import type { Language } from '../i18n/translations';
 import type {
+  ChatReplyReference,
   GameLengthMode,
+  MessageReactionDoc,
   PersonalSticker,
+  ReactionEmoji,
   RoomChatMessage,
   RoomDoc,
   RoomPlayerDoc,
@@ -1223,11 +1226,24 @@ export async function setPlayerVoiceState(
   }
 }
 
+function buildReplyPayload(replyTo?: ChatReplyReference | null): Partial<ChatReplyReference> {
+  if (!replyTo) return {};
+  const preview = replyTo.replyToPreviewText.trim().slice(0, 160) || '...';
+  const sender = replyTo.replyToSenderName.trim().slice(0, 24) || 'Player';
+  return {
+    replyToMessageId: replyTo.replyToMessageId,
+    replyToSenderName: sender,
+    replyToPreviewText: preview,
+    replyToType: replyTo.replyToType,
+  };
+}
+
 export async function sendRoomChatMessage(
   roomCode: string,
   senderName: string,
   text: string,
-  memberIds: string[]
+  memberIds: string[],
+  replyTo?: ChatReplyReference | null
 ): Promise<void> {
   const user = auth.currentUser;
   if (!user) throw new Error('AUTH_REQUIRED');
@@ -1243,6 +1259,7 @@ export async function sendRoomChatMessage(
       senderName: cleanName,
       text: cleanText,
       memberIds: safeMembers,
+      ...buildReplyPayload(replyTo),
       createdAt: serverTimestamp(),
     });
   } catch (error) {
@@ -1287,7 +1304,8 @@ export async function sendRoomStickerMessage(
   roomCode: string,
   senderName: string,
   sticker: PersonalSticker,
-  memberIds: string[]
+  memberIds: string[],
+  replyTo?: ChatReplyReference | null
 ): Promise<void> {
   const user = auth.currentUser;
   if (!user) throw new Error('AUTH_REQUIRED');
@@ -1312,11 +1330,159 @@ export async function sendRoomStickerMessage(
       stickerCreatorId: sticker.creatorUid,
       stickerCreatorName: cleanCreatorName,
       stickerContentHash: sticker.contentHash,
+      ...buildReplyPayload(replyTo),
       createdAt: serverTimestamp(),
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, `rooms/${roomCode}/messages`);
   }
+}
+
+function getAudioExtensionFromMime(mimeType: string): string {
+  const lower = mimeType.toLowerCase();
+  if (lower.includes('mp4') || lower.includes('m4a')) return 'm4a';
+  if (lower.includes('ogg') || lower.includes('opus')) return 'ogg';
+  if (lower.includes('mpeg') || lower.includes('mp3')) return 'mp3';
+  if (lower.includes('wav')) return 'wav';
+  return 'webm';
+}
+
+export async function uploadAndSendVoiceMessage(params: {
+  roomCode: string;
+  senderName: string;
+  blob: Blob;
+  mimeType: string;
+  durationSec: number;
+  memberIds: string[];
+  replyTo?: ChatReplyReference | null;
+}): Promise<void> {
+  const user = auth.currentUser;
+  if (!user) throw new Error('AUTH_REQUIRED');
+
+  const safeMime = (params.mimeType || params.blob.type || 'audio/webm').split(';')[0].trim();
+  if (!safeMime.startsWith('audio/')) {
+    throw new Error('VOICE_INVALID_FORMAT');
+  }
+  if (params.blob.size > 5 * 1024 * 1024) {
+    throw new Error('VOICE_TOO_LARGE');
+  }
+
+  const safeDuration = Math.min(300, Math.max(1, Math.round(params.durationSec)));
+  const ext = getAudioExtensionFromMime(safeMime);
+  const voiceId = `voc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const path = `voiceMessages/${params.roomCode}/${user.uid}/${voiceId}.${ext}`;
+  const fileRef = storageRef(storage, path);
+
+  let downloadUrl = '';
+  try {
+    await uploadBytes(fileRef, params.blob, {
+      contentType: safeMime,
+      cacheControl: 'public,max-age=604800',
+    });
+    downloadUrl = await getDownloadURL(fileRef);
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code ?? '';
+    const msg = err instanceof Error ? err.message : String(err);
+    if (
+      code === 'storage/bucket-not-found' ||
+      code === 'storage/project-not-found' ||
+      code === 'storage/unauthorized' ||
+      code === 'storage/unknown' ||
+      msg.includes('404') ||
+      msg.includes('Not Found')
+    ) {
+      throw new Error('VOICE_STORAGE_UNAVAILABLE');
+    }
+    throw new Error('VOICE_UPLOAD_FAILED');
+  }
+
+  const cleanName = (params.senderName || 'Player').trim().slice(0, 24) || 'Player';
+  const safeMembers = Array.from(new Set([user.uid, ...params.memberIds])).slice(0, 12);
+
+  try {
+    await addDoc(collection(db, 'rooms', params.roomCode, 'messages'), {
+      senderId: user.uid,
+      senderName: cleanName,
+      text: `[Voice ${safeDuration}s]`,
+      memberIds: safeMembers,
+      messageType: 'voice',
+      audioUrl: downloadUrl,
+      audioStoragePath: path,
+      audioDurationSec: safeDuration,
+      audioMimeType: safeMime,
+      ...buildReplyPayload(params.replyTo),
+      createdAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `rooms/${params.roomCode}/messages`);
+  }
+}
+
+export async function toggleMessageReaction(params: {
+  roomCode: string;
+  messageId: string;
+  userName: string;
+  emoji: ReactionEmoji;
+  memberIds: string[];
+  currentMyEmoji?: ReactionEmoji | null;
+}): Promise<void> {
+  const user = auth.currentUser;
+  if (!user) throw new Error('AUTH_REQUIRED');
+
+  const reactionId = `${params.messageId}_${user.uid}`;
+  const ref = doc(db, 'rooms', params.roomCode, 'messageReactions', reactionId);
+
+  try {
+    if (params.currentMyEmoji === params.emoji) {
+      await deleteDoc(ref);
+      return;
+    }
+
+    const cleanName = (params.userName || 'Player').trim().slice(0, 24) || 'Player';
+    const safeMembers = Array.from(new Set([user.uid, ...params.memberIds])).slice(0, 12);
+
+    await setDoc(ref, {
+      reactionId,
+      messageId: params.messageId,
+      userId: user.uid,
+      userName: cleanName,
+      emoji: params.emoji,
+      memberIds: safeMembers,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(
+      error,
+      OperationType.WRITE,
+      `rooms/${params.roomCode}/messageReactions/${reactionId}`
+    );
+  }
+}
+
+export function subscribeToRoomReactions(
+  roomCode: string,
+  myUid: string,
+  onReactions: (reactions: MessageReactionDoc[]) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  if (!myUid) return () => {};
+  const q = query(
+    collection(db, 'rooms', roomCode, 'messageReactions'),
+    where('memberIds', 'array-contains', myUid)
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list: MessageReactionDoc[] = snap.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as Omit<MessageReactionDoc, 'id'>),
+      }));
+      onReactions(list);
+    },
+    (err) => {
+      if (onError) onError(err);
+    }
+  );
 }
 
 export function subscribeToMyStickers(

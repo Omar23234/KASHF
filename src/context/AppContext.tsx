@@ -3,6 +3,10 @@ import { onAuthStateChanged, type User } from 'firebase/auth';
 import { auth, testConnection } from '../firebase/config';
 import { TRANSLATIONS, type Language } from '../i18n/translations';
 import type { AppScreen } from '../types/game';
+import {
+  loadChatNotificationsEnabled,
+  saveChatNotificationsEnabled,
+} from '../utils/chatNotifications';
 
 interface AppContextValue {
   language: Language;
@@ -11,6 +15,8 @@ interface AppContextValue {
   isRTL: boolean;
   soundEnabled: boolean;
   setSoundEnabled: (val: boolean) => void;
+  chatNotificationsEnabled: boolean;
+  setChatNotificationsEnabled: (val: boolean) => void;
   screen: AppScreen;
   setScreen: (screen: AppScreen) => void;
   activeRoomCode: string | null;
@@ -43,6 +49,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   });
 
+  const [chatNotificationsEnabled, setChatNotificationsEnabledState] = useState<boolean>(() =>
+    loadChatNotificationsEnabled()
+  );
+
   const [screen, setScreen] = useState<AppScreen>('home');
   const [activeRoomCode, setActiveRoomCode] = useState<string | null>(null);
   const [authUser, setAuthUser] = useState<User | null>(null);
@@ -64,6 +74,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {
       // ignore
     }
+  };
+
+  const setChatNotificationsEnabled = (val: boolean) => {
+    setChatNotificationsEnabledState(val);
+    saveChatNotificationsEnabled(val);
   };
 
   useEffect(() => {
@@ -93,6 +108,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         isRTL,
         soundEnabled,
         setSoundEnabled,
+        chatNotificationsEnabled,
+        setChatNotificationsEnabled,
         screen,
         setScreen,
         activeRoomCode,

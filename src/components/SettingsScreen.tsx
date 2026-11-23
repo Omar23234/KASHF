@@ -1,12 +1,39 @@
-import React from 'react';
-import { CheckCircle2, Globe, Volume2, VolumeX } from 'lucide-react';
+import React, { useState } from 'react';
+import { Bell, BellOff, CheckCircle2, Globe, Volume2, VolumeX } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useApp } from '../context/AppContext';
+import {
+  getWebNotificationPermissionState,
+  requestChatNotificationPermission,
+  type WebNotificationPermissionState,
+} from '../utils/chatNotifications';
 import { soundFX } from '../utils/sound';
 import { PWAInstallButton } from './PWAInstallButton';
 
 export const SettingsScreen: React.FC = () => {
-  const { language, setLanguage, soundEnabled, setSoundEnabled, t } = useApp();
+  const {
+    language,
+    setLanguage,
+    soundEnabled,
+    setSoundEnabled,
+    chatNotificationsEnabled,
+    setChatNotificationsEnabled,
+    t,
+  } = useApp();
+
+  const [permState, setPermState] = useState<WebNotificationPermissionState>(() =>
+    getWebNotificationPermissionState()
+  );
+
+  const handleToggleNotifications = async () => {
+    const next = !chatNotificationsEnabled;
+    soundFX.tap(soundEnabled);
+    setChatNotificationsEnabled(next);
+    if (next) {
+      const updated = await requestChatNotificationPermission();
+      setPermState(updated);
+    }
+  };
 
   return (
     <motion.div
@@ -91,6 +118,76 @@ export const SettingsScreen: React.FC = () => {
           >
             {soundEnabled ? (language === 'ar' ? 'مفعّل' : 'On') : (language === 'ar' ? 'مغلق' : 'Off')}
           </button>
+        </div>
+
+        {/* Chat Notifications Setting */}
+        <div className="p-5 sm:p-6 space-y-2.5">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-11 h-11 rounded-2xl bg-[#F3EBDD] border border-[#D5C7B2] flex items-center justify-center text-[#8B5E3C] shrink-0">
+                {chatNotificationsEnabled && permState !== 'denied' ? (
+                  <Bell className="w-5 h-5" />
+                ) : (
+                  <BellOff className="w-5 h-5" />
+                )}
+              </div>
+              <div className="min-w-0">
+                <h2 className="font-bold text-[#231A15]">{t.chatNotificationsLabel}</h2>
+                <p className="text-xs text-[#6E5E50] leading-relaxed">{t.chatNotificationsSub}</p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => void handleToggleNotifications()}
+              className={`min-h-[42px] px-5 rounded-xl text-xs font-bold border transition cursor-pointer shrink-0 ${
+                chatNotificationsEnabled
+                  ? 'bg-[#231A15] border-[#231A15] text-[#FBF7F0]'
+                  : 'bg-[#F3EBDD] border-[#D5C7B2] text-[#6E5E50]'
+              }`}
+            >
+              {chatNotificationsEnabled
+                ? language === 'ar'
+                  ? 'مفعّل'
+                  : 'On'
+                : language === 'ar'
+                  ? 'مغلق'
+                  : 'Off'}
+            </button>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 ps-14 text-[11px]">
+            <span
+              className={`font-bold ${
+                permState === 'granted'
+                  ? 'text-[#4A6B46]'
+                  : permState === 'denied'
+                    ? 'text-[#9B3B30]'
+                    : 'text-[#8B5E3C]'
+              }`}
+            >
+              {permState === 'granted'
+                ? t.chatNotificationsGranted
+                : permState === 'denied'
+                  ? t.chatNotificationsDenied
+                  : permState === 'unsupported'
+                    ? t.chatNotificationsUnsupported
+                    : t.chatNotificationsDefault}
+            </span>
+
+            {chatNotificationsEnabled && permState === 'default' && (
+              <button
+                type="button"
+                onClick={() =>
+                  void requestChatNotificationPermission().then((nextPerm) => setPermState(nextPerm))
+                }
+                className="px-3 py-1 rounded-lg bg-[#EFE6D6] hover:bg-[#E5DAC5] border border-[#D5C7B2] text-[#231A15] font-bold cursor-pointer"
+              >
+                {t.enableNotificationsBtn}
+              </button>
+            )}
+          </div>
+          <p className="ps-14 text-[11px] text-[#7A6A5B] leading-relaxed">{t.chatPushScopeNote}</p>
         </div>
 
         {/* Offline & PWA Status */}

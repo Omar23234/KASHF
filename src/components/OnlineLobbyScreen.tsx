@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Check,
   Copy,
@@ -30,6 +30,7 @@ import {
 } from '../firebase/multiplayerService';
 import { useWebRTCVoiceChat } from '../hooks/useWebRTCVoiceChat';
 import type { RoomDoc, RoomPlayerDoc } from '../types/game';
+import { formatMultiplayerError } from '../utils/errorMessages';
 import { soundFX } from '../utils/sound';
 import { PlayerAvatar } from './PlayerAvatar';
 import { RoomChatVoicePanel } from './RoomChatVoicePanel';
@@ -43,6 +44,7 @@ export const OnlineLobbyScreen: React.FC = () => {
   const [copied, setCopied] = useState(false);
   const [starting, setStarting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const lastClampedRef = useRef<string | null>(null);
 
   const voice = useWebRTCVoiceChat({
     roomCode: activeRoomCode,
@@ -82,7 +84,7 @@ export const OnlineLobbyScreen: React.FC = () => {
       },
       (err) => {
         setLoading(false);
-        setErrorMsg(err.message);
+        setErrorMsg(formatMultiplayerError(err, t));
       }
     );
 
@@ -115,10 +117,17 @@ export const OnlineLobbyScreen: React.FC = () => {
   useEffect(() => {
     if (!room || !authUser || room.hostId !== authUser.uid || room.status !== 'waiting') return;
     const maxRounds = getMaxRoundsForPlayers(room.playerOrder.length);
+    const clampKey = `${room.roomCode}:${maxRounds}`;
     if (room.gameMode === 'rounds' && room.roundsCount > maxRounds) {
-      void updateLobbySettings(room.roomCode, { roundsCount: maxRounds });
+      if (lastClampedRef.current === clampKey) return;
+      lastClampedRef.current = clampKey;
+      void updateLobbySettings(room.roomCode, { roundsCount: maxRounds }).catch((err) =>
+        setErrorMsg(formatMultiplayerError(err, t))
+      );
+    } else {
+      lastClampedRef.current = null;
     }
-  }, [room, authUser]);
+  }, [room, authUser, t]);
 
   if (loading || !room) {
     return (
@@ -180,17 +189,23 @@ export const OnlineLobbyScreen: React.FC = () => {
     try {
       await startOrRestartMultiplayerGame(room.roomCode);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : t.errGeneric);
+      setErrorMsg(formatMultiplayerError(err, t));
+    } finally {
       setStarting(false);
     }
   };
 
   const handleLeave = async () => {
     soundFX.tap(soundEnabled);
-    await voice.leaveVoice();
-    await leaveMultiplayerRoom(room.roomCode);
-    setActiveRoomCode(null);
-    setScreen('home');
+    try {
+      await voice.leaveVoice();
+      await leaveMultiplayerRoom(room.roomCode);
+    } catch {
+      // still exit room locally if disconnect already happened
+    } finally {
+      setActiveRoomCode(null);
+      setScreen('home');
+    }
   };
 
   return (
@@ -317,7 +332,10 @@ export const OnlineLobbyScreen: React.FC = () => {
                       type="button"
                       onClick={() => {
                         soundFX.tap(soundEnabled);
-                        void kickPlayerFromLobby(room.roomCode, pid);
+                        setErrorMsg('');
+                        void kickPlayerFromLobby(room.roomCode, pid).catch((err) =>
+                          setErrorMsg(formatMultiplayerError(err, t))
+                        );
                       }}
                       className="min-h-[40px] px-3 rounded-xl text-xs font-bold text-[#9B3B30] hover:bg-[#F9EAE6] border border-[#E2BDB5] flex items-center gap-1.5 transition cursor-pointer shrink-0"
                     >
@@ -350,10 +368,11 @@ export const OnlineLobbyScreen: React.FC = () => {
                     type="button"
                     onClick={() => {
                       soundFX.tap(soundEnabled);
+                      setErrorMsg('');
                       void updateLobbySettings(room.roomCode, {
                         gameMode: 'rounds',
                         roundsCount: effectiveRounds,
-                      });
+                      }).catch((err) => setErrorMsg(formatMultiplayerError(err, t)));
                     }}
                     className={`min-h-[42px] px-3 rounded-xl text-xs font-bold transition cursor-pointer ${
                       room.gameMode === 'rounds'
@@ -367,7 +386,10 @@ export const OnlineLobbyScreen: React.FC = () => {
                     type="button"
                     onClick={() => {
                       soundFX.tap(soundEnabled);
-                      void updateLobbySettings(room.roomCode, { gameMode: 'all_questions' });
+                      setErrorMsg('');
+                      void updateLobbySettings(room.roomCode, { gameMode: 'all_questions' }).catch(
+                        (err) => setErrorMsg(formatMultiplayerError(err, t))
+                      );
                     }}
                     className={`min-h-[42px] px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer ${
                       room.gameMode === 'all_questions'
@@ -401,9 +423,10 @@ export const OnlineLobbyScreen: React.FC = () => {
                       disabled={effectiveRounds <= 1}
                       onClick={() => {
                         soundFX.tap(soundEnabled);
+                        setErrorMsg('');
                         void updateLobbySettings(room.roomCode, {
                           roundsCount: Math.max(1, effectiveRounds - 1),
-                        });
+                        }).catch((err) => setErrorMsg(formatMultiplayerError(err, t)));
                       }}
                       className="flex-1 min-h-[44px] rounded-xl bg-[#EFE6D6] hover:bg-[#E5DAC5] border border-[#D5C7B2] text-[#231A15] font-bold disabled:opacity-35 cursor-pointer"
                     >
@@ -414,9 +437,10 @@ export const OnlineLobbyScreen: React.FC = () => {
                       disabled={effectiveRounds >= maxRounds}
                       onClick={() => {
                         soundFX.tap(soundEnabled);
+                        setErrorMsg('');
                         void updateLobbySettings(room.roomCode, {
                           roundsCount: Math.min(maxRounds, effectiveRounds + 1),
-                        });
+                        }).catch((err) => setErrorMsg(formatMultiplayerError(err, t)));
                       }}
                       className="flex-1 min-h-[44px] rounded-xl bg-[#EFE6D6] hover:bg-[#E5DAC5] border border-[#D5C7B2] text-[#231A15] font-bold disabled:opacity-35 cursor-pointer"
                     >
@@ -446,9 +470,10 @@ export const OnlineLobbyScreen: React.FC = () => {
                   type="button"
                   onClick={() => {
                     soundFX.tap(soundEnabled);
+                    setErrorMsg('');
                     void updateLobbySettings(room.roomCode, {
                       randomFirstPlayer: !room.randomFirstPlayer,
-                    });
+                    }).catch((err) => setErrorMsg(formatMultiplayerError(err, t)));
                   }}
                   className={`min-h-[40px] px-4 rounded-xl text-xs font-bold border transition cursor-pointer ${
                     room.randomFirstPlayer
@@ -470,7 +495,10 @@ export const OnlineLobbyScreen: React.FC = () => {
                 type="button"
                 onClick={() => {
                   soundFX.tap(soundEnabled);
-                  void claimDisconnectedHost(room.roomCode);
+                  setErrorMsg('');
+                  void claimDisconnectedHost(room.roomCode).catch((err) =>
+                    setErrorMsg(formatMultiplayerError(err, t))
+                  );
                 }}
                 className="w-full min-h-[44px] px-4 rounded-2xl bg-[#FBF5E4] border border-[#D7BD7B] text-[#7D5D18] text-xs font-bold flex items-center justify-center gap-2 cursor-pointer"
               >

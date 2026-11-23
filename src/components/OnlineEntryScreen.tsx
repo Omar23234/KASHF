@@ -13,6 +13,7 @@ import {
   saveActiveRoom,
 } from '../firebase/multiplayerService';
 import type { GameLengthMode } from '../types/game';
+import { formatMultiplayerError } from '../utils/errorMessages';
 import { soundFX } from '../utils/sound';
 
 interface OnlineEntryScreenProps {
@@ -39,8 +40,8 @@ export const OnlineEntryScreen: React.FC<OnlineEntryScreenProps> = ({ initialRoo
     try {
       const res = await ensureAnonymousAuth();
       setAnonDisabledError(res.anonDisabledError);
-    } catch {
-      setErrorMsg(t.errGeneric);
+    } catch (err) {
+      setErrorMsg(formatMultiplayerError(err, t));
     } finally {
       setAuthLoading(false);
     }
@@ -72,8 +73,7 @@ export const OnlineEntryScreen: React.FC<OnlineEntryScreenProps> = ({ initialRoo
       setActiveRoomCode(code);
       setScreen('online_lobby');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '';
-      setErrorMsg(msg === 'INVALID_NAME' ? t.errEnterName : t.errGeneric);
+      setErrorMsg(formatMultiplayerError(err, t));
     } finally {
       setSubmitting(false);
     }
@@ -101,13 +101,7 @@ export const OnlineEntryScreen: React.FC<OnlineEntryScreenProps> = ({ initialRoo
       setActiveRoomCode(res.roomCode);
       setScreen('online_lobby');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '';
-      if (msg === 'ROOM_NOT_FOUND') setErrorMsg(t.errRoomNotFound);
-      else if (msg === 'ROOM_STARTED') setErrorMsg(t.errRoomStarted);
-      else if (msg === 'ROOM_FULL') setErrorMsg(t.errRoomFull);
-      else if (msg === 'ROOM_CLOSED') setErrorMsg(t.errRoomClosed);
-      else if (msg === 'INVALID_CODE') setErrorMsg(t.errInvalidCode);
-      else setErrorMsg(t.errGeneric);
+      setErrorMsg(formatMultiplayerError(err, t));
     } finally {
       setSubmitting(false);
     }
@@ -125,10 +119,13 @@ export const OnlineEntryScreen: React.FC<OnlineEntryScreenProps> = ({ initialRoo
       });
       setActiveRoomCode(savedRoom);
       setScreen('online_lobby');
-    } catch {
-      saveActiveRoom(null);
-      setSavedRoom(null);
-      setErrorMsg(t.errRoomNotFound);
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : '';
+      if (raw === 'ROOM_NOT_FOUND' || raw === 'ROOM_CLOSED' || raw === 'ROOM_STARTED' || raw === 'ROOM_FULL') {
+        saveActiveRoom(null);
+        setSavedRoom(null);
+      }
+      setErrorMsg(formatMultiplayerError(err, t));
     } finally {
       setSubmitting(false);
     }

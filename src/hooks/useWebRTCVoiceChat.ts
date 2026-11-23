@@ -15,7 +15,7 @@ const RTC_CONFIG: RTCConfiguration = {
   ],
 };
 
-export type VoiceErrorType = '' | 'permission_denied' | 'not_supported';
+export type VoiceErrorType = '' | 'permission_denied' | 'no_mic_device' | 'not_supported';
 
 export function useWebRTCVoiceChat(params: {
   roomCode: string | null;
@@ -239,8 +239,13 @@ export function useWebRTCVoiceChat(params: {
       voiceJoinedRef.current = true;
       micMutedRef.current = false;
       await setPlayerVoiceState(roomCode, true, false);
-    } catch {
-      setVoiceError('permission_denied');
+    } catch (err: unknown) {
+      const name = (err as { name?: string })?.name ?? '';
+      if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+        setVoiceError('no_mic_device');
+      } else {
+        setVoiceError('permission_denied');
+      }
     }
   }, [attachAnalyser, myUid, roomCode]);
 

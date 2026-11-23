@@ -301,8 +301,8 @@
         },
         "messageType": {
           "type": "string",
-          "description": "Message kind: text (default) or sticker.",
-          "enum": ["text", "sticker"]
+          "description": "Message kind: text (default), sticker, or voice.",
+          "enum": ["text", "sticker", "voice"]
         },
         "stickerId": {
           "type": "string",
@@ -342,6 +342,52 @@
           "minLength": 8,
           "maxLength": 128
         },
+        "audioUrl": {
+          "type": "string",
+          "description": "HTTPS Firebase Storage download URL for a recorded voice message.",
+          "minLength": 10,
+          "maxLength": 2048
+        },
+        "audioStoragePath": {
+          "type": "string",
+          "description": "Firebase Storage path for a recorded voice message.",
+          "minLength": 3,
+          "maxLength": 512
+        },
+        "audioDurationSec": {
+          "type": "integer",
+          "description": "Recorded voice message length in seconds (1 to 300)."
+        },
+        "audioMimeType": {
+          "type": "string",
+          "description": "MIME type of the recorded audio clip (e.g. audio/webm, audio/mp4, audio/m4a).",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "replyToMessageId": {
+          "type": "string",
+          "description": "Referenced original message ID when replying to a message.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "replyToSenderName": {
+          "type": "string",
+          "description": "Display name snapshot of the replied-to message sender.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "replyToPreviewText": {
+          "type": "string",
+          "description": "Short quoted preview snippet for the replied-to message.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "replyToType": {
+          "type": "string",
+          "description": "Kind of message being replied to.",
+          "enum": ["text", "sticker", "voice"]
+        },
         "memberIds": {
           "type": "array",
           "description": "Snapshot of room player UIDs permitted to view the message without collection-wide get() reads."
@@ -353,6 +399,55 @@
         }
       },
       "required": ["senderId", "senderName", "text", "memberIds", "createdAt"]
+    },
+    "MessageReaction": {
+      "title": "MessageReaction",
+      "description": "Single player's emoji reaction to a specific chat message (one document per messageId + userId).",
+      "type": "object",
+      "properties": {
+        "reactionId": {
+          "type": "string",
+          "description": "Deterministic ID equal to {messageId}_{userId}.",
+          "minLength": 3,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "messageId": {
+          "type": "string",
+          "description": "Target chat message document ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the reacting player.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userName": {
+          "type": "string",
+          "description": "Display name of the reacting player.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "emoji": {
+          "type": "string",
+          "description": "Reaction emoji from the supported reaction palette.",
+          "enum": ["❤️", "😂", "😮", "😢", "👍", "👎"]
+        },
+        "memberIds": {
+          "type": "array",
+          "description": "Snapshot of room player UIDs permitted to list reactions."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the reaction create/update."
+        }
+      },
+      "required": ["reactionId", "messageId", "userId", "userName", "emoji", "memberIds", "updatedAt"]
     },
     "PersonalSticker": {
       "title": "PersonalSticker",
@@ -482,7 +577,13 @@
       "schema": {
         "$ref": "#/entities/RoomChatMessage"
       },
-      "description": "Real-time text, emoji, and sticker chat messages scoped strictly to room members."
+      "description": "Real-time text, emoji, sticker, and voice chat messages with optional reply metadata scoped strictly to room members."
+    },
+    "/rooms/{roomId}/messageReactions/{reactionId}": {
+      "schema": {
+        "$ref": "#/entities/MessageReaction"
+      },
+      "description": "Real-time per-user emoji reactions on room chat messages, isolated per reacting UID."
     },
     "/rooms/{roomId}/voiceSignals/{signalId}": {
       "schema": {

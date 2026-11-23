@@ -41,14 +41,12 @@ service cloud.firestore {
     function isValidLastCardEvent(evt) {
       return evt == null || (
         evt is map
-        && evt.keys().hasAll(['nonce', 'type', 'cardId', 'actorUid', 'actorName', 'targetUid', 'targetName'])
-        && evt.keys().hasOnly(['nonce', 'type', 'cardId', 'actorUid', 'actorName', 'targetUid', 'targetName'])
         && evt.nonce is int && evt.nonce >= 1
         && evt.type in ['awarded', 'gold', 'switch', 'anti_switch']
         && evt.cardId is string && evt.cardId.size() >= 1 && evt.cardId.size() <= 32
-        && isValidId(evt.actorUid)
+        && evt.actorUid is string && evt.actorUid.size() >= 1 && evt.actorUid.size() <= 128
         && evt.actorName is string && evt.actorName.size() >= 1 && evt.actorName.size() <= 24
-        && (evt.targetUid == null || isValidId(evt.targetUid))
+        && (evt.targetUid == null || (evt.targetUid is string && evt.targetUid.size() >= 1 && evt.targetUid.size() <= 128))
         && (evt.targetName == null || (evt.targetName is string && evt.targetName.size() >= 1 && evt.targetName.size() <= 24))
       );
     }
@@ -89,7 +87,7 @@ service cloud.firestore {
         && data.playerCount is int && data.playerCount == data.playerOrder.size()
         && data.currentTurnIndex is int && data.currentTurnIndex >= 0 && data.currentTurnIndex <= 12
         && data.currentRound is int && data.currentRound >= 1 && data.currentRound <= 31
-        && data.totalTurnsCompleted is int && data.totalTurnsCompleted >= 0 && data.totalTurnsCompleted <= 63
+        && data.totalTurnsCompleted is int && data.totalTurnsCompleted >= 0 && data.totalTurnsCompleted <= 200
         && data.completedQuestionsCount is int && data.completedQuestionsCount >= 0 && data.completedQuestionsCount <= 63
         && data.skippedQuestionsCount is int && data.skippedQuestionsCount >= 0 && data.skippedQuestionsCount <= 36
         && (data.currentQuestionId == null || (data.currentQuestionId is int && data.currentQuestionId >= 1 && data.currentQuestionId <= 63))
@@ -144,6 +142,36 @@ service cloud.firestore {
         && data.lastSeenAt is timestamp;
     }
 
+    function isValidRoomUpdateSchema(data, prev) {
+      return data.diff(prev).addedKeys().size() == 0
+        && data.diff(prev).removedKeys().size() == 0
+        && data.roomCode == prev.roomCode
+        && data.createdAt == prev.createdAt
+        && data.expiresAt == prev.expiresAt
+        && data.updatedAt == request.time
+        && isValidId(data.hostId)
+        && data.status in ['waiting', 'playing', 'finished', 'exhausted', 'closed']
+        && data.gameMode in ['rounds', 'all_questions']
+        && data.language in ['ar', 'en']
+        && data.roundsCount is int && data.roundsCount >= 1 && data.roundsCount <= 31
+        && data.randomFirstPlayer is bool
+        && data.soundEnabled is bool
+        && data.playerOrder is list && data.playerOrder.size() >= 0 && data.playerOrder.size() <= 12
+        && data.playerCount is int && data.playerCount == data.playerOrder.size()
+        && data.currentTurnIndex is int && data.currentTurnIndex >= 0 && data.currentTurnIndex <= 12
+        && data.currentRound is int && data.currentRound >= 1 && data.currentRound <= 31
+        && data.totalTurnsCompleted is int && data.totalTurnsCompleted >= 0 && data.totalTurnsCompleted <= 200
+        && data.completedQuestionsCount is int && data.completedQuestionsCount >= 0 && data.completedQuestionsCount <= 63
+        && data.skippedQuestionsCount is int && data.skippedQuestionsCount >= 0 && data.skippedQuestionsCount <= 36
+        && data.turnNonce is int && data.turnNonce >= 0 && data.turnNonce <= 100000
+        && data.turnQuestionsRemaining is int && data.turnQuestionsRemaining >= 1 && data.turnQuestionsRemaining <= 2
+        && data.turnMode in ['normal', 'switch_pending', 'anti_switch_forced']
+        && data.availableSpecialCards is list && data.availableSpecialCards.size() <= 5
+        && data.awardedCardIds is list && data.awardedCardIds.size() <= 5
+        && (data.availableSpecialCards.size() + data.awardedCardIds.size() <= 5)
+        && (data.lastCardEvent == prev.lastCardEvent || isValidLastCardEvent(data.lastCardEvent));
+    }
+
     function isValidCardAwardChange() {
       return (
         incoming().availableSpecialCards == existing().availableSpecialCards
@@ -151,10 +179,10 @@ service cloud.firestore {
       ) || (
         existing().availableSpecialCards.size() >= 1
         && incoming().availableSpecialCards.size() == existing().availableSpecialCards.size() - 1
-        && existing().availableSpecialCards.hasAll(incoming().availableSpecialCards)
+        && (incoming().availableSpecialCards.size() == 0 || existing().availableSpecialCards.hasAll(incoming().availableSpecialCards))
         && incoming().awardedCardIds.size() == existing().awardedCardIds.size() + 1
-        && incoming().awardedCardIds.hasAll(existing().awardedCardIds)
-        && incoming().lastCardEvent != null
+        && (existing().awardedCardIds.size() == 0 || incoming().awardedCardIds.hasAll(existing().awardedCardIds))
+        && incoming().lastCardEvent is map
         && incoming().lastCardEvent.type == 'awarded'
         && incoming().lastCardEvent.nonce == incoming().turnNonce
       );
@@ -275,9 +303,8 @@ service cloud.firestore {
         );
     }
 
-    function isNextQuestionAction() {
-      return existing().status == 'playing'
-        && (request.auth.uid == existing().activePlayerId || request.auth.uid == existing().hostId)
+    function isNextQuestionDelta() {
+      return (request.auth.uid == existing().activePlayerId || request.auth.uid == existing().hostId)
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'status', 'currentTurnIndex', 'currentRound', 'totalTurnsCompleted',
           'completedQuestionsCount', 'currentQuestionId', 'usedQuestionIds',
@@ -285,20 +312,20 @@ service cloud.firestore {
           'turnMode', 'switchSourceId', 'switchTargetId',
           'availableSpecialCards', 'awardedCardIds', 'lastCardEvent', 'updatedAt'
         ])
-        && incoming().turnNonce == existing().turnNonce + 1
         && incoming().completedQuestionsCount == existing().completedQuestionsCount + 1
-        && incoming().totalTurnsCompleted == existing().totalTurnsCompleted + 1
         && incoming().turnMode == 'normal'
         && incoming().switchSourceId == null
-        && incoming().switchTargetId == null
-        && incoming().status in ['playing', 'finished', 'exhausted']
-        && isValidCardAwardChange()
-        && isValidNextQuestionState();
+        && incoming().switchTargetId == null;
     }
 
-    function isSkipQuestionAction(roomId) {
-      return existing().status == 'playing'
-        && existing().turnMode == 'normal'
+    function checkSkipPlayerDelta(beforePlayer, afterPlayer) {
+      return beforePlayer.skipsRemaining >= 1
+        && afterPlayer.skipsRemaining == beforePlayer.skipsRemaining - 1
+        && afterPlayer.score == beforePlayer.score - 3;
+    }
+
+    function isSkipQuestionDelta(roomId) {
+      return existing().turnMode == 'normal'
         && request.auth.uid == existing().activePlayerId
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'status', 'currentTurnIndex', 'currentRound', 'totalTurnsCompleted',
@@ -306,22 +333,21 @@ service cloud.firestore {
           'activePlayerId', 'turnNonce', 'turnQuestionsRemaining',
           'availableSpecialCards', 'awardedCardIds', 'lastCardEvent', 'updatedAt'
         ])
-        && incoming().turnNonce == existing().turnNonce + 1
         && incoming().skippedQuestionsCount == existing().skippedQuestionsCount + 1
-        && incoming().totalTurnsCompleted == existing().totalTurnsCompleted + 1
-        && incoming().status in ['playing', 'finished', 'exhausted']
-        && get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.skipsRemaining >= 1
-        && getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.skipsRemaining
-          == get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.skipsRemaining - 1
-        && getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.score
-          == get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.score - 3
-        && isValidCardAwardChange()
-        && isValidNextQuestionState();
+        && checkSkipPlayerDelta(
+          get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data,
+          getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data
+        );
     }
 
-    function isUseGoldCardAction(roomId) {
-      return existing().status == 'playing'
-        && existing().turnMode == 'normal'
+    function checkGoldPlayerDelta(beforePlayer, afterPlayer) {
+      return beforePlayer.goldCards >= 1
+        && afterPlayer.goldCards == beforePlayer.goldCards - 1
+        && afterPlayer.score == beforePlayer.score;
+    }
+
+    function isUseGoldCardDelta(roomId) {
+      return existing().turnMode == 'normal'
         && request.auth.uid == existing().activePlayerId
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'status', 'currentTurnIndex', 'currentRound', 'totalTurnsCompleted',
@@ -329,16 +355,29 @@ service cloud.firestore {
           'turnQuestionsRemaining', 'availableSpecialCards', 'awardedCardIds',
           'lastCardEvent', 'updatedAt'
         ])
+        && checkGoldPlayerDelta(
+          get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data,
+          getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data
+        );
+    }
+
+    function isTurnAdvanceAction(roomId) {
+      return existing().status == 'playing'
+        && incoming().status in ['playing', 'finished', 'exhausted']
         && incoming().turnNonce == existing().turnNonce + 1
         && incoming().totalTurnsCompleted == existing().totalTurnsCompleted + 1
-        && incoming().status in ['playing', 'finished', 'exhausted']
-        && get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.goldCards >= 1
-        && getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.goldCards
-          == get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.goldCards - 1
-        && getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.score
-          == get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.score
+        && (
+          isNextQuestionDelta()
+          || isSkipQuestionDelta(roomId)
+          || isUseGoldCardDelta(roomId)
+        )
         && isValidCardAwardChange()
         && isValidNextQuestionState();
+    }
+
+    function checkSwitchPlayerDelta(beforePlayer, afterPlayer) {
+      return beforePlayer.switchCards >= 1
+        && afterPlayer.switchCards == beforePlayer.switchCards - 1;
     }
 
     function isUseSwitchCardAction(roomId) {
@@ -360,9 +399,15 @@ service cloud.firestore {
         && incoming().lastCardEvent != null
         && incoming().lastCardEvent.type == 'switch'
         && incoming().lastCardEvent.nonce == incoming().turnNonce
-        && get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.switchCards >= 1
-        && getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.switchCards
-          == get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.switchCards - 1;
+        && checkSwitchPlayerDelta(
+          get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data,
+          getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data
+        );
+    }
+
+    function checkAntiSwitchPlayerDelta(beforePlayer, afterPlayer) {
+      return beforePlayer.antiSwitchCards >= 1
+        && afterPlayer.antiSwitchCards == beforePlayer.antiSwitchCards - 1;
     }
 
     function isUseAntiSwitchCardAction(roomId) {
@@ -380,9 +425,10 @@ service cloud.firestore {
         && incoming().lastCardEvent != null
         && incoming().lastCardEvent.type == 'anti_switch'
         && incoming().lastCardEvent.nonce == incoming().turnNonce
-        && get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.antiSwitchCards >= 1
-        && getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.antiSwitchCards
-          == get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data.antiSwitchCards - 1;
+        && checkAntiSwitchPlayerDelta(
+          get(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data,
+          getAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)).data
+        );
     }
 
     function isTransferHostAction(roomId) {
@@ -418,12 +464,31 @@ service cloud.firestore {
         && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
     }
 
+    function isValidReplyMetadata(data) {
+      return (
+        !('replyToMessageId' in data)
+        && !('replyToSenderName' in data)
+        && !('replyToPreviewText' in data)
+        && !('replyToType' in data)
+      ) || (
+        data.keys().hasAll([
+          'replyToMessageId', 'replyToSenderName', 'replyToPreviewText', 'replyToType'
+        ])
+        && isValidId(data.replyToMessageId)
+        && data.replyToSenderName is string && data.replyToSenderName.size() >= 1 && data.replyToSenderName.size() <= 24
+        && data.replyToPreviewText is string && data.replyToPreviewText.size() >= 1 && data.replyToPreviewText.size() <= 160
+        && data.replyToType in ['text', 'sticker', 'voice']
+      );
+    }
+
     function isValidRoomChatMessage(data) {
       return data.keys().hasAll(['senderId', 'senderName', 'text', 'memberIds', 'createdAt'])
         && data.keys().hasOnly([
           'senderId', 'senderName', 'text', 'memberIds', 'createdAt',
           'messageType', 'stickerId', 'stickerUrl', 'stickerStoragePath',
-          'stickerCreatorId', 'stickerCreatorName', 'stickerContentHash'
+          'stickerCreatorId', 'stickerCreatorName', 'stickerContentHash',
+          'audioUrl', 'audioStoragePath', 'audioDurationSec', 'audioMimeType',
+          'replyToMessageId', 'replyToSenderName', 'replyToPreviewText', 'replyToType'
         ])
         && data.senderId == request.auth.uid
         && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 24
@@ -431,6 +496,7 @@ service cloud.firestore {
         && (data.memberIds[0] is string)
         && request.auth.uid in data.memberIds
         && data.createdAt == request.time
+        && isValidReplyMetadata(data)
         && (
           (
             (!('messageType' in data) || data.messageType == 'text')
@@ -441,6 +507,10 @@ service cloud.firestore {
             && !('stickerCreatorId' in data)
             && !('stickerCreatorName' in data)
             && !('stickerContentHash' in data)
+            && !('audioUrl' in data)
+            && !('audioStoragePath' in data)
+            && !('audioDurationSec' in data)
+            && !('audioMimeType' in data)
           )
           || (
             ('messageType' in data && data.messageType == 'sticker')
@@ -457,8 +527,46 @@ service cloud.firestore {
             && data.stickerCreatorName is string && data.stickerCreatorName.size() >= 1 && data.stickerCreatorName.size() <= 24
             && data.stickerContentHash is string && data.stickerContentHash.size() >= 8 && data.stickerContentHash.size() <= 128
             && data.stickerContentHash.matches('^[a-zA-Z0-9_\\-]+$')
+            && !('audioUrl' in data)
+            && !('audioStoragePath' in data)
+            && !('audioDurationSec' in data)
+            && !('audioMimeType' in data)
+          )
+          || (
+            ('messageType' in data && data.messageType == 'voice')
+            && data.keys().hasAll([
+              'messageType', 'audioUrl', 'audioStoragePath', 'audioDurationSec', 'audioMimeType'
+            ])
+            && data.text is string && data.text.size() >= 1 && data.text.size() <= 100
+            && data.audioUrl is string && data.audioUrl.size() >= 10 && data.audioUrl.size() <= 2048
+            && data.audioUrl.matches('^https://.*')
+            && data.audioStoragePath is string && data.audioStoragePath.size() >= 3 && data.audioStoragePath.size() <= 512
+            && data.audioDurationSec is int && data.audioDurationSec >= 1 && data.audioDurationSec <= 300
+            && data.audioMimeType is string && data.audioMimeType.size() >= 3 && data.audioMimeType.size() <= 64
+            && data.audioMimeType.matches('^audio/.*')
+            && !('stickerId' in data)
+            && !('stickerUrl' in data)
           )
         );
+    }
+
+    function isValidMessageReaction(data, reactionId) {
+      return data.keys().hasAll([
+          'reactionId', 'messageId', 'userId', 'userName', 'emoji', 'memberIds', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'reactionId', 'messageId', 'userId', 'userName', 'emoji', 'memberIds', 'updatedAt'
+        ])
+        && isValidId(data.reactionId)
+        && isValidId(data.messageId)
+        && data.userId == request.auth.uid
+        && data.reactionId == reactionId
+        && reactionId == (data.messageId + '_' + request.auth.uid)
+        && data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 24
+        && data.emoji in ['❤️', '😂', '😮', '😢', '👍', '👎']
+        && data.memberIds is list && data.memberIds.size() >= 1 && data.memberIds.size() <= 12
+        && request.auth.uid in data.memberIds
+        && data.updatedAt == request.time;
     }
 
     function isValidPersonalSticker(data) {
@@ -518,27 +626,25 @@ service cloud.firestore {
         && incoming().expiresAt > request.time
         && existsAfter(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid));
 
-      allow update: if isSignedIn()
-        && isValidRoomCode(roomId)
-        && existing().status != 'closed'
-        && isValidRoom(incoming())
-        && incoming().roomCode == existing().roomCode
-        && incoming().createdAt == existing().createdAt
-        && incoming().updatedAt == request.time
-        && (
-          isJoinRoomAction(roomId)
-          || isLeaveRoomAction(roomId)
-          || isHostKickPlayerAction()
-          || isUpdateLobbySettingsAction()
-          || isHostStartOrRestartGameAction()
-          || isNextQuestionAction()
-          || isSkipQuestionAction(roomId)
-          || isUseGoldCardAction(roomId)
-          || isUseSwitchCardAction(roomId)
-          || isUseAntiSwitchCardAction(roomId)
-          || isTransferHostAction(roomId)
-          || isCloseRoomAction()
-        );
+      function isBaseValidRoomUpdate() {
+        return isSignedIn()
+          && isValidRoomCode(roomId)
+          && existing().status != 'closed'
+          && isValidRoomUpdateSchema(incoming(), existing());
+      }
+
+      allow update: if isBaseValidRoomUpdate() && (
+        isHostStartOrRestartGameAction()
+        || isTurnAdvanceAction(roomId)
+        || isUpdateLobbySettingsAction()
+        || isHostKickPlayerAction()
+        || isCloseRoomAction()
+        || isJoinRoomAction(roomId)
+        || isUseSwitchCardAction(roomId)
+        || isUseAntiSwitchCardAction(roomId)
+        || isLeaveRoomAction(roomId)
+        || isTransferHostAction(roomId)
+      );
 
       allow delete: if false;
 
@@ -771,6 +877,38 @@ service cloud.firestore {
           && isValidRoomChatMessage(incoming());
 
         allow update, delete: if false;
+      }
+
+      // Per-User Real-Time Message Reactions (Isolated Owner Write/Delete)
+      match /messageReactions/{reactionId} {
+        allow get: if isSignedIn()
+          && isValidRoomCode(roomId)
+          && isValidId(reactionId)
+          && isRoomMember(roomId);
+        allow list: if isSignedIn()
+          && isValidRoomCode(roomId)
+          && request.auth.uid in resource.data.memberIds;
+
+        allow create: if isSignedIn()
+          && isValidRoomCode(roomId)
+          && isValidId(reactionId)
+          && isRoomMember(roomId)
+          && isValidMessageReaction(incoming(), reactionId);
+
+        allow update: if isSignedIn()
+          && isValidRoomCode(roomId)
+          && isValidId(reactionId)
+          && isRoomMember(roomId)
+          && existing().userId == request.auth.uid
+          && incoming().messageId == existing().messageId
+          && incoming().reactionId == existing().reactionId
+          && incoming().userId == existing().userId
+          && isValidMessageReaction(incoming(), reactionId);
+
+        allow delete: if isSignedIn()
+          && isValidRoomCode(roomId)
+          && isValidId(reactionId)
+          && existing().userId == request.auth.uid;
       }
 
       // Ephemeral WebRTC Voice Signaling (SDP & ICE only - zero audio stored)
