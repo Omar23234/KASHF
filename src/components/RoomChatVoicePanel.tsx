@@ -1,10 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bell,
-  BookmarkCheck,
-  BookmarkPlus,
   Clock,
-  ImagePlus,
   Loader2,
   MessageSquare,
   Mic,
@@ -18,9 +15,9 @@ import {
   Smile,
   SmilePlus,
   Sparkles,
-  Sticker,
   Trash2,
   UserCheck,
+  Volume2,
   X,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
@@ -34,25 +31,23 @@ import {
   type EmojiCategoryId,
 } from '../data/emojis';
 import {
-  deletePersonalSticker,
-  saveStickerToMyCollection,
   sendRoomChatMessage,
-  sendRoomStickerMessage,
-  subscribeToMyStickers,
+  setRoomChatPresence,
+  subscribeToRoomChatPresence,
   subscribeToRoomMessages,
   subscribeToRoomReactions,
   toggleMessageReaction,
   uploadAndSendVoiceMessage,
-  uploadPersonalSticker,
 } from '../firebase/multiplayerService';
 import type { VoiceErrorType } from '../hooks/useWebRTCVoiceChat';
 import {
   REACTION_EMOJIS,
+  type ChatPresenceStatus,
   type ChatReplyReference,
   type MessageReactionDoc,
-  type PersonalSticker,
   type ReactionEmoji,
   type RoomChatMessage,
+  type RoomChatPresenceDoc,
   type RoomPlayerDoc,
   type SinglePhonePlayer,
 } from '../types/game';
@@ -63,54 +58,34 @@ import {
   type WebNotificationPermissionState,
 } from '../utils/chatNotifications';
 import {
-  addPersonalStickerToSinglePhoneState,
-  appendSinglePhoneStickerMessage,
   appendSinglePhoneTextMessage,
   appendSinglePhoneVoiceMessage,
-  deleteSinglePhoneStickerFromState,
   loadSinglePhoneChatState,
   persistSinglePhoneChatState,
-  saveOtherStickerToSinglePhoneState,
   toggleSinglePhoneReaction,
   type SinglePhoneChatStoreState,
 } from '../utils/singlePhoneChatStore';
-import { compressStickerFile, StickerImageError } from '../utils/stickerImage';
+import { PlayerAvatar } from './PlayerAvatar';
 
-type ChatTab = 'messages' | 'stickers' | 'emojis';
+type ChatTab = 'messages' | 'emojis';
 
-const MAX_VOICE_SECONDS = 180;
-const MAX_ONLINE_VOICE_BYTES = 5 * 1024 * 1024;
-const MAX_LOCAL_VOICE_BYTES = 1.5 * 1024 * 1024;
-
-interface InspectStickerItem {
-  stickerId: string;
-  imageUrl: string;
-  storagePath: string;
-  contentHash: string;
-  creatorUid: string;
-  creatorName: string;
-  fromMyCollection: boolean;
-}
+const MAX_VOICE_SECONDS = 90;
+const MAX_ONLINE_VOICE_BYTES = 480 * 1024;
+const MAX_LOCAL_VOICE_BYTES = 480 * 1024;
 
 interface UnifiedDisplayMessage {
   id: string;
   senderId: string;
   senderName: string;
   text: string;
-  messageType: 'text' | 'sticker' | 'voice';
-  stickerId?: string;
-  stickerUrl?: string;
-  stickerStoragePath?: string;
-  stickerCreatorId?: string;
-  stickerCreatorName?: string;
-  stickerContentHash?: string;
+  messageType: 'text' | 'voice';
   audioUrl?: string;
   audioDurationSec?: number;
   audioMimeType?: string;
   replyToMessageId?: string;
   replyToSenderName?: string;
   replyToPreviewText?: string;
-  replyToType?: 'text' | 'sticker' | 'voice';
+  replyToType?: 'text' | 'voice';
   createdAtMs: number | null;
 }
 
@@ -129,10 +104,12 @@ interface OnlineRoomChatProps {
   voiceJoined: boolean;
   micMuted: boolean;
   voiceError: VoiceErrorType;
+  voiceAudioBlocked?: boolean;
   speakingUids: Record<string, boolean>;
   onJoinVoice: () => void;
   onLeaveVoice: () => void;
   onToggleMute: () => void;
+  onUnlockVoiceAudio?: () => void;
 }
 
 interface SinglePhoneChatProps {
@@ -334,7 +311,8 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
   // Online states
   const [onlineMessages, setOnlineMessages] = useState<RoomChatMessage[]>([]);
   const [onlineReactions, setOnlineReactions] = useState<MessageReactionDoc[]>([]);
-  const [onlineMyStickers, setOnlineMyStickers] = useState<PersonalSticker[]>([]);
+  const [onlinePresence, setOnlinePresence] = useState<RoomChatPresenceDoc[]>([]);
+  const [presenceNowMs, setPresenceNowMs] = useState<number>(() => Date.now());
 
   // Single phone offline states
   const [spState, setSpState] = useState<SinglePhoneChatStoreState>(() =>
@@ -348,13 +326,10 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
   const [unreadCount, setUnreadCount] = useState(0);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
-  const [uploadingSticker, setUploadingSticker] = useState(false);
-  const [stickerFeedback, setStickerFeedback] = useState<{
+  const [chatFeedback, setChatFeedback] = useState<{
     type: 'error' | 'info' | 'success';
     text: string;
   } | null>(null);
-  const [inspectSticker, setInspectSticker] = useState<InspectStickerItem | null>(null);
-  const [savingStickerId, setSavingStickerId] = useState<string | null>(null);
 
   // Reply & Reactions UI states
   const [replyTo, setReplyTo] = useState<ChatReplyReference | null>(null);
@@ -375,7 +350,6 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
   const knownMsgIdsRef = useRef<Set<string>>(new Set());
 
   const scrollBottomRef = useRef<HTMLDivElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
   const messageNodeMapRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const highlightTimerRef = useRef<number | null>(null);
@@ -391,14 +365,20 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
   const recordStartMsRef = useRef<number>(0);
   const recordMimeRef = useRef<string>('audio/webm');
   const cancelledRecordRef = useRef<boolean>(false);
+  const voiceSendingRef = useRef<boolean>(false);
   const activeAudioElRef = useRef<HTMLAudioElement | null>(null);
   const replyToRef = useRef<ChatReplyReference | null>(null);
   replyToRef.current = replyTo;
+  const typingIdleTimerRef = useRef<number | null>(null);
+  const lastPublishedPresenceRef = useRef<{ status: ChatPresenceStatus; atMs: number }>({
+    status: 'idle',
+    atMs: 0,
+  });
 
   const showTimedFeedback = useCallback((type: 'error' | 'info' | 'success', text: string) => {
-    setStickerFeedback({ type, text });
+    setChatFeedback({ type, text });
     window.setTimeout(() => {
-      setStickerFeedback((curr) => (curr?.text === text ? null : curr));
+      setChatFeedback((curr) => (curr?.text === text ? null : curr));
     }, 4500);
   }, []);
 
@@ -471,7 +451,7 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
     };
   }, [cleanupRecordingResources]);
 
-  // Online subscriptions (messages, reactions, personal stickers)
+  // Online subscriptions (messages and reactions)
   useEffect(() => {
     if (isSinglePhone || !onlineRoomCode || !onlineMyUid) return;
 
@@ -506,11 +486,9 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
         if (notifEnabledRef.current) {
           const latest = fromOthers[fromOthers.length - 1];
           const bodyPreview =
-            latest.messageType === 'sticker'
-              ? t.replyStickerPreview
-              : latest.messageType === 'voice'
-                ? `${t.replyVoicePreview} (${formatMmSs(latest.audioDurationSec ?? 1)})`
-                : latest.text;
+            latest.messageType === 'voice'
+              ? `${t.replyVoicePreview} (${formatMmSs(latest.audioDurationSec ?? 1)})`
+              : latest.text;
           void showIncomingChatNotification({
             roomCode: onlineRoomCode,
             title: `${latest.senderName} · ${t.newMessageNotifTitle}`,
@@ -528,22 +506,164 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
       setOnlineReactions(rxns);
     });
 
-    const unsubStickers = subscribeToMyStickers(onlineMyUid, (stickers) => {
-      setOnlineMyStickers(stickers);
+    const unsubPresence = subscribeToRoomChatPresence(onlineRoomCode, onlineMyUid, (items) => {
+      setOnlinePresence(items);
+      setPresenceNowMs(Date.now());
     });
 
     return () => {
       unsubMsgs();
       unsubReactions();
-      unsubStickers();
+      unsubPresence();
     };
   }, [
     isSinglePhone,
     onlineRoomCode,
     onlineMyUid,
     t.newMessageNotifTitle,
-    t.replyStickerPreview,
     t.replyVoicePreview,
+  ]);
+
+  const publishPresence = useCallback(
+    (nextStatus: ChatPresenceStatus, force = false) => {
+      if (isSinglePhone || !onlineRoomCode || !onlineMyUid || !onlineMyName) return;
+      if (!onlineMemberIds.includes(onlineMyUid)) return;
+      const now = Date.now();
+      const prev = lastPublishedPresenceRef.current;
+      if (!force && prev.status === nextStatus) {
+        if (nextStatus === 'idle') return;
+        if (now - prev.atMs < 2400) return;
+      }
+      lastPublishedPresenceRef.current = { status: nextStatus, atMs: now };
+      void setRoomChatPresence({
+        roomCode: onlineRoomCode,
+        senderName: onlineMyName,
+        status: nextStatus,
+        memberIds: onlineMemberIds,
+      }).catch(() => {});
+    },
+    [isSinglePhone, onlineRoomCode, onlineMyUid, onlineMyName, onlineMemberIds]
+  );
+
+  // Tick 1s timer while any remote player has non-idle presence so stale entries expire smoothly
+  useEffect(() => {
+    if (isSinglePhone) return;
+    const hasNonIdle = onlinePresence.some(
+      (p) => p.uid !== onlineMyUid && p.status !== 'idle'
+    );
+    if (!hasNonIdle) return;
+    const id = window.setInterval(() => {
+      setPresenceNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [isSinglePhone, onlinePresence, onlineMyUid]);
+
+  // Publish recording presence heartbeat while recording voice note
+  useEffect(() => {
+    if (isSinglePhone || !onlineRoomCode || !onlineMyUid) return;
+    if (recordingState === 'recording') {
+      if (typingIdleTimerRef.current !== null) {
+        window.clearTimeout(typingIdleTimerRef.current);
+        typingIdleTimerRef.current = null;
+      }
+      publishPresence('recording', true);
+      const id = window.setInterval(() => {
+        publishPresence('recording', true);
+      }, 3200);
+      return () => {
+        window.clearInterval(id);
+      };
+    }
+    if (lastPublishedPresenceRef.current.status === 'recording') {
+      publishPresence('idle', true);
+    }
+  }, [isSinglePhone, onlineRoomCode, onlineMyUid, recordingState, publishPresence]);
+
+  // Publish typing presence with 3s auto-idle when draft changes
+  useEffect(() => {
+    if (isSinglePhone || !onlineRoomCode || !onlineMyUid) return;
+    if (typingIdleTimerRef.current !== null) {
+      window.clearTimeout(typingIdleTimerRef.current);
+      typingIdleTimerRef.current = null;
+    }
+
+    if (!chatOpen) {
+      if (lastPublishedPresenceRef.current.status !== 'idle') {
+        publishPresence('idle', true);
+      }
+      return;
+    }
+
+    if (recordingState !== 'idle') return;
+
+    if (draft.trim().length > 0) {
+      publishPresence('typing');
+      typingIdleTimerRef.current = window.setTimeout(() => {
+        publishPresence('idle', true);
+      }, 3000);
+    } else if (lastPublishedPresenceRef.current.status === 'typing') {
+      publishPresence('idle', true);
+    }
+
+    return () => {
+      if (typingIdleTimerRef.current !== null) {
+        window.clearTimeout(typingIdleTimerRef.current);
+        typingIdleTimerRef.current = null;
+      }
+    };
+  }, [isSinglePhone, onlineRoomCode, onlineMyUid, chatOpen, recordingState, draft, publishPresence]);
+
+  // Ensure local presence returns to idle on unmount
+  useEffect(() => {
+    return () => {
+      if (lastPublishedPresenceRef.current.status !== 'idle') {
+        publishPresence('idle', true);
+      }
+    };
+  }, [publishPresence]);
+
+  const remotePresenceInfo = useMemo(() => {
+    if (isSinglePhone) {
+      return { kind: null as null | 'typing' | 'recording', label: '', shortLabel: '' };
+    }
+    const active = onlinePresence.filter(
+      (p) => p.uid !== onlineMyUid && p.status !== 'idle' && p.expiresAtMs > presenceNowMs
+    );
+    if (active.length === 0) {
+      return { kind: null as null | 'typing' | 'recording', label: '', shortLabel: '' };
+    }
+    const recorders = active.filter((p) => p.status === 'recording');
+    const typers = active.filter((p) => p.status === 'typing');
+    const isRec = recorders.length > 0;
+    const list = isRec ? recorders : typers;
+    const names = list.map((p) => p.name).filter(Boolean);
+    const label =
+      names.length === 1
+        ? `${names[0]} ${isRec ? t.chatRecordingSingle : t.chatTypingSingle}`
+        : `${names.slice(0, 2).join(language === 'ar' ? ' و' : ' & ')} ${isRec ? t.chatRecordingMany : t.chatTypingMany}`;
+    const shortLabel =
+      names.length === 1
+        ? `${names[0]}: ${isRec ? t.chatSomeoneRecordingShort : t.chatSomeoneTypingShort}`
+        : isRec
+          ? t.chatSomeoneRecordingShort
+          : t.chatSomeoneTypingShort;
+    return {
+      kind: isRec ? ('recording' as const) : ('typing' as const),
+      label,
+      shortLabel,
+    };
+  }, [
+    isSinglePhone,
+    onlinePresence,
+    onlineMyUid,
+    presenceNowMs,
+    language,
+    t.chatRecordingSingle,
+    t.chatTypingSingle,
+    t.chatRecordingMany,
+    t.chatTypingMany,
+    t.chatSomeoneRecordingShort,
+    t.chatSomeoneTypingShort,
   ]);
 
   const currentActor = useMemo(() => {
@@ -563,13 +683,6 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
     };
   }, [isSinglePhone, props, spSenderId]);
 
-  const myStickers: PersonalSticker[] = useMemo(() => {
-    if (isSinglePhone) {
-      return spState.stickersByPlayer[currentActor.uid] ?? [];
-    }
-    return onlineMyStickers;
-  }, [isSinglePhone, spState.stickersByPlayer, currentActor.uid, onlineMyStickers]);
-
   const displayMessages: UnifiedDisplayMessage[] = useMemo(() => {
     if (isSinglePhone) {
       return spState.messages.map((m) => ({
@@ -577,49 +690,34 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
         senderId: m.senderId,
         senderName: m.senderName,
         text: m.text,
-        messageType: m.messageType,
-        stickerId: m.stickerId,
-        stickerUrl: m.stickerUrl,
-        stickerStoragePath: `local/${m.stickerCreatorId ?? m.senderId}/${m.stickerId ?? 'stk'}`,
-        stickerCreatorId: m.stickerCreatorId,
-        stickerCreatorName: m.stickerCreatorName,
-        stickerContentHash: m.stickerContentHash,
+        messageType: m.messageType === 'voice' ? 'voice' : 'text',
         audioUrl: m.audioUrl,
         audioDurationSec: m.audioDurationSec,
         audioMimeType: m.audioMimeType,
         replyToMessageId: m.replyToMessageId,
         replyToSenderName: m.replyToSenderName,
         replyToPreviewText: m.replyToPreviewText,
-        replyToType: m.replyToType,
+        replyToType: m.replyToType === 'voice' ? 'voice' : 'text',
         createdAtMs: m.createdAtMs,
       }));
     }
-    return onlineMessages.map((m) => ({
-      id: m.id,
-      senderId: m.senderId,
-      senderName: m.senderName,
-      text: m.text,
-      messageType:
-        m.messageType === 'sticker'
-          ? 'sticker'
-          : m.messageType === 'voice'
-            ? 'voice'
-            : 'text',
-      stickerId: m.stickerId,
-      stickerUrl: m.stickerUrl,
-      stickerStoragePath: m.stickerStoragePath,
-      stickerCreatorId: m.stickerCreatorId,
-      stickerCreatorName: m.stickerCreatorName,
-      stickerContentHash: m.stickerContentHash,
-      audioUrl: m.audioUrl,
-      audioDurationSec: m.audioDurationSec,
-      audioMimeType: m.audioMimeType,
-      replyToMessageId: m.replyToMessageId,
-      replyToSenderName: m.replyToSenderName,
-      replyToPreviewText: m.replyToPreviewText,
-      replyToType: m.replyToType,
-      createdAtMs: m.createdAt?.toMillis?.() ?? null,
-    }));
+    return onlineMessages
+      .filter((m) => m.messageType === 'text' || m.messageType === 'voice')
+      .map((m) => ({
+        id: m.id,
+        senderId: m.senderId,
+        senderName: m.senderName,
+        text: m.text,
+        messageType: m.messageType === 'voice' ? 'voice' : 'text',
+        audioUrl: m.audioUrl,
+        audioDurationSec: m.audioDurationSec,
+        audioMimeType: m.audioMimeType,
+        replyToMessageId: m.replyToMessageId,
+        replyToSenderName: m.replyToSenderName,
+        replyToPreviewText: m.replyToPreviewText,
+        replyToType: m.replyToType === 'voice' ? 'voice' : 'text',
+        createdAtMs: m.createdAt?.toMillis?.() ?? null,
+      }));
   }, [isSinglePhone, spState.messages, onlineMessages]);
 
   const reactionsByMessage = useMemo(() => {
@@ -650,36 +748,6 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
     return map;
   }, [isSinglePhone, spState.reactions, onlineReactions, currentActor.uid]);
 
-  // Unique stickers shared by other players in the room chat
-  const roomOtherStickers = useMemo(() => {
-    const seen = new Set<string>();
-    const result: InspectStickerItem[] = [];
-    for (let i = displayMessages.length - 1; i >= 0; i--) {
-      const m = displayMessages[i];
-      if (
-        m.messageType === 'sticker' &&
-        m.stickerId &&
-        m.stickerUrl &&
-        m.senderId !== currentActor.uid
-      ) {
-        const key = m.stickerContentHash || m.stickerId;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        result.push({
-          stickerId: m.stickerId,
-          imageUrl: m.stickerUrl,
-          storagePath:
-            m.stickerStoragePath || `stickers/${m.stickerCreatorId || m.senderId}/${m.stickerId}`,
-          contentHash: m.stickerContentHash || m.stickerId,
-          creatorUid: m.stickerCreatorId || m.senderId,
-          creatorName: m.stickerCreatorName || m.senderName,
-          fromMyCollection: false,
-        });
-      }
-    }
-    return result;
-  }, [displayMessages, currentActor.uid]);
-
   useEffect(() => {
     if (chatOpen) {
       setUnreadCount(0);
@@ -688,21 +756,11 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
         scrollBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
       }
     }
-  }, [chatOpen, displayMessages.length, activeTab]);
-
-  const isStickerAlreadySaved = (stickerId: string, contentHash?: string): boolean => {
-    return myStickers.some(
-      (s) => s.stickerId === stickerId || (contentHash ? s.contentHash === contentHash : false)
-    );
-  };
+  }, [chatOpen, displayMessages.length, activeTab, remotePresenceInfo.label]);
 
   const buildReplyReference = (m: UnifiedDisplayMessage): ChatReplyReference => {
     let previewText = m.text;
-    if (m.messageType === 'sticker') {
-      previewText = m.stickerCreatorName
-        ? `${t.replyStickerPreview} · ${m.stickerCreatorName}`
-        : t.replyStickerPreview;
-    } else if (m.messageType === 'voice') {
+    if (m.messageType === 'voice') {
       previewText = `${t.replyVoicePreview} (${formatMmSs(m.audioDurationSec ?? 1)})`;
     }
     return {
@@ -816,173 +874,20 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
     textInputRef.current?.focus();
   };
 
-  const handleStickerFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file || uploadingSticker) return;
-
-    setUploadingSticker(true);
-    setStickerFeedback(null);
-
-    try {
-      const compressed = await compressStickerFile(file);
-
-      if (isSinglePhone) {
-        const res = addPersonalStickerToSinglePhoneState(spState, {
-          playerId: currentActor.uid,
-          playerName: currentActor.name,
-          dataUrl: compressed.dataUrl,
-          contentHash: compressed.contentHash,
-        });
-        if (res.status === 'added') {
-          setSpState(res.nextState);
-          persistSinglePhoneChatState(res.nextState);
-        }
-        showTimedFeedback(
-          res.status === 'already_exists' ? 'info' : 'success',
-          res.status === 'already_exists'
-            ? t.stickerAlreadySavedBadge
-            : t.stickerSavedBadge
-        );
-      } else {
-        const res = await uploadPersonalSticker({
-          blob: compressed.blob,
-          mimeType: compressed.mimeType,
-          extension: compressed.extension,
-          contentHash: compressed.contentHash,
-          creatorName: onlineMyName,
-        });
-        showTimedFeedback(
-          res.status === 'already_exists' ? 'info' : 'success',
-          res.status === 'already_exists' ? t.stickerAlreadySavedBadge : t.stickerSavedBadge
-        );
-      }
-    } catch (err) {
-      if (err instanceof StickerImageError) {
-        if (err.code === 'UNSUPPORTED_FORMAT') {
-          showTimedFeedback('error', t.stickerFormatError);
-        } else if (err.code === 'FILE_TOO_LARGE') {
-          showTimedFeedback('error', t.stickerTooLargeError);
-        } else {
-          showTimedFeedback('error', t.stickerUploadError);
-        }
-      } else if (err instanceof Error && err.message === 'STICKER_STORAGE_UNAVAILABLE') {
-        showTimedFeedback('error', t.stickerStorageUnavailable);
-      } else {
-        showTimedFeedback('error', t.stickerUploadError);
-      }
-    } finally {
-      setUploadingSticker(false);
-    }
-  };
-
-  const handleSendSticker = async (sticker: PersonalSticker) => {
-    if (sending) return;
-    const activeReply = replyTo;
-    setSending(true);
-    try {
-      if (isSinglePhone) {
-        setSpState((prev) => {
-          const next = appendSinglePhoneStickerMessage(
-            prev,
-            currentActor.uid,
-            currentActor.name,
-            sticker,
-            activeReply
-          );
-          persistSinglePhoneChatState(next);
-          return next;
-        });
-      } else {
-        await sendRoomStickerMessage(
-          onlineRoomCode,
-          onlineMyName,
-          sticker,
-          onlineMemberIds,
-          activeReply
-        );
-      }
-      setReplyTo(null);
-      setInspectSticker(null);
-      setActiveTab('messages');
-    } catch {
-      showTimedFeedback('error', t.stickerUploadError);
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const handleSaveOtherSticker = async (item: InspectStickerItem) => {
-    if (savingStickerId) return;
-    if (isStickerAlreadySaved(item.stickerId, item.contentHash)) {
-      showTimedFeedback('info', t.stickerAlreadySavedBadge);
-      return;
-    }
-
-    setSavingStickerId(item.stickerId);
-    try {
-      if (isSinglePhone) {
-        const res = saveOtherStickerToSinglePhoneState(spState, {
-          targetPlayerId: currentActor.uid,
-          stickerId: item.stickerId,
-          imageUrl: item.imageUrl,
-          contentHash: item.contentHash,
-          creatorUid: item.creatorUid,
-          creatorName: item.creatorName,
-        });
-        if (res.status === 'saved') {
-          setSpState(res.nextState);
-          persistSinglePhoneChatState(res.nextState);
-        }
-        showTimedFeedback(
-          res.status === 'already_exists' ? 'info' : 'success',
-          res.status === 'already_exists' ? t.stickerAlreadySavedBadge : t.stickerSavedBadge
-        );
-      } else {
-        const res = await saveStickerToMyCollection({
-          stickerId: item.stickerId,
-          imageUrl: item.imageUrl,
-          storagePath: item.storagePath,
-          contentHash: item.contentHash,
-          creatorUid: item.creatorUid,
-          creatorName: item.creatorName,
-        });
-        showTimedFeedback(
-          res === 'already_exists' ? 'info' : 'success',
-          res === 'already_exists' ? t.stickerAlreadySavedBadge : t.stickerSavedBadge
-        );
-      }
-    } catch {
-      showTimedFeedback('error', t.stickerUploadError);
-    } finally {
-      setSavingStickerId(null);
-    }
-  };
-
-  const handleDeleteMySticker = async (stickerId: string) => {
-    if (isSinglePhone) {
-      setSpState((prev) => {
-        const next = deleteSinglePhoneStickerFromState(prev, currentActor.uid, stickerId);
-        persistSinglePhoneChatState(next);
-        return next;
-      });
-    } else {
-      await deletePersonalSticker(stickerId);
-    }
-    setInspectSticker(null);
-  };
-
   const finishAndUploadRecordedAudio = async (
     blob: Blob,
     mimeType: string,
-    durationSec: number
+    elapsedMs: number
   ) => {
-    if (durationSec < 1 || blob.size < 256) {
+    if (voiceSendingRef.current) return;
+    if (elapsedMs < 450 || blob.size < 128) {
       showTimedFeedback('info', t.voiceTooShort);
       setRecordingState('idle');
       return;
     }
 
+    const durationSec = Math.min(MAX_VOICE_SECONDS, Math.max(1, Math.round(elapsedMs / 1000)));
+    const safeMime = (blob.type || mimeType || 'audio/webm').split(';')[0].trim() || 'audio/webm';
     const activeReply = replyToRef.current;
 
     if (isSinglePhone) {
@@ -991,6 +896,7 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
         setRecordingState('idle');
         return;
       }
+      voiceSendingRef.current = true;
       setRecordingState('uploading');
       try {
         const dataUrl = await blobToDataUrl(blob);
@@ -1000,7 +906,7 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
             senderName: currentActor.name,
             audioUrl: dataUrl,
             audioDurationSec: durationSec,
-            audioMimeType: mimeType || 'audio/webm',
+            audioMimeType: safeMime,
             replyTo: activeReply,
           });
           persistSinglePhoneChatState(next);
@@ -1011,6 +917,7 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
       } catch {
         showTimedFeedback('error', t.voiceUploadFailed);
       } finally {
+        voiceSendingRef.current = false;
         setRecordingState('idle');
       }
       return;
@@ -1022,13 +929,14 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
       return;
     }
 
+    voiceSendingRef.current = true;
     setRecordingState('uploading');
     try {
       await uploadAndSendVoiceMessage({
         roomCode: onlineRoomCode,
         senderName: onlineMyName,
         blob,
-        mimeType: mimeType || 'audio/webm',
+        mimeType: safeMime,
         durationSec,
         memberIds: onlineMemberIds,
         replyTo: activeReply,
@@ -1040,16 +948,19 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
         showTimedFeedback('error', t.voiceStorageUnavailable);
       } else if (err instanceof Error && err.message === 'VOICE_TOO_LARGE') {
         showTimedFeedback('error', t.voiceTooLong);
+      } else if (err instanceof Error && err.message === 'VOICE_EMPTY') {
+        showTimedFeedback('info', t.voiceTooShort);
       } else {
         showTimedFeedback('error', t.voiceUploadFailed);
       }
     } finally {
+      voiceSendingRef.current = false;
       setRecordingState('idle');
     }
   };
 
   const startVoiceRecording = async () => {
-    if (recordingState !== 'idle' || sending) return;
+    if (recordingState !== 'idle' || sending || voiceSendingRef.current) return;
     if (
       typeof navigator === 'undefined' ||
       !navigator.mediaDevices?.getUserMedia ||
@@ -1061,7 +972,13 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
 
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
     } catch (err: unknown) {
       const name = (err as { name?: string })?.name ?? '';
       if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
@@ -1074,14 +991,23 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
 
     try {
       const preferredMime = pickSupportedRecorderMime();
-      const recorder = preferredMime
-        ? new MediaRecorder(stream, { mimeType: preferredMime })
-        : new MediaRecorder(stream);
+      const options: MediaRecorderOptions = { audioBitsPerSecond: 20000 };
+      if (preferredMime) options.mimeType = preferredMime;
+
+      let recorder: MediaRecorder;
+      try {
+        recorder = new MediaRecorder(stream, options);
+      } catch {
+        recorder = preferredMime
+          ? new MediaRecorder(stream, { mimeType: preferredMime })
+          : new MediaRecorder(stream);
+      }
 
       recordStreamRef.current = stream;
       mediaRecorderRef.current = recorder;
       recordChunksRef.current = [];
-      recordMimeRef.current = (recorder.mimeType || preferredMime || 'audio/webm').split(';')[0];
+      recordMimeRef.current =
+        (recorder.mimeType || preferredMime || 'audio/webm').split(';')[0].trim() || 'audio/webm';
       cancelledRecordRef.current = false;
       recordStartMsRef.current = Date.now();
       setRecordSeconds(0);
@@ -1097,14 +1023,14 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
         const wasCancelled = cancelledRecordRef.current;
         const mime = recordMimeRef.current || 'audio/webm';
         const blob = new Blob(recordChunksRef.current, { type: mime });
-        const elapsedSec = Math.round((Date.now() - recordStartMsRef.current) / 1000);
+        const elapsedMs = Date.now() - recordStartMsRef.current;
         cleanupRecordingResources();
         setRecordSeconds(0);
         if (wasCancelled) {
           setRecordingState('idle');
           return;
         }
-        void finishAndUploadRecordedAudio(blob, mime, elapsedSec);
+        void finishAndUploadRecordedAudio(blob, mime, elapsedMs);
       };
 
       recorder.start(250);
@@ -1144,6 +1070,11 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
     cancelledRecordRef.current = false;
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state === 'recording') {
+      try {
+        recorder.requestData();
+      } catch {
+        // ignore if unsupported before stop
+      }
       recorder.stop();
     }
   };
@@ -1252,6 +1183,17 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
                   <PhoneOff className="w-3.5 h-3.5" />
                   <span>{t.leaveVoiceBtn}</span>
                 </button>
+
+                {props.voiceAudioBlocked && props.onUnlockVoiceAudio && (
+                  <button
+                    type="button"
+                    onClick={props.onUnlockVoiceAudio}
+                    className="min-h-[38px] px-3.5 rounded-xl bg-[#FBF5E4] hover:bg-[#F5E9C6] border border-[#D7BD7B] text-[#7D5D18] text-xs font-extrabold flex items-center gap-1.5 transition cursor-pointer animate-pulse whitespace-nowrap"
+                  >
+                    <Volume2 className="w-3.5 h-3.5" />
+                    <span>{t.voiceTapToEnableAudio}</span>
+                  </button>
+                )}
               </>
             )}
           </div>
@@ -1267,14 +1209,19 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
           </div>
         )}
 
-        {/* Chat + Stickers + Emojis Button */}
+        {/* Chat + Voice Notes + Emojis Button */}
         <button
           type="button"
           onClick={() => setChatOpen(true)}
           className="relative min-h-[38px] px-3.5 rounded-xl bg-[#EFE6D6] hover:bg-[#E5DAC5] border border-[#D5C7B2] text-[#231A15] text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap"
         >
           <MessageSquare className="w-3.5 h-3.5 text-[#8B5E3C]" />
-          <span>{isSinglePhone ? t.chatTabMessages + ' · ' + t.chatTabStickers : t.chatTitle}</span>
+          <span>{isSinglePhone ? t.offlineChatTitle : t.chatTitle}</span>
+          {remotePresenceInfo.kind && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-[#EEF3EC] border border-[#B9CEB3] text-[#355432] text-[10px] font-extrabold animate-pulse">
+              {remotePresenceInfo.shortLabel}
+            </span>
+          )}
           {unreadCount > 0 && (
             <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-[#9B3B30] text-[#FFFDF9] font-mono-tabular text-[10px] font-extrabold flex items-center justify-center">
               {unreadCount > 99 ? '99+' : unreadCount}
@@ -1293,15 +1240,6 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
         )}
       </div>
 
-      {/* Hidden Gallery Input for Personal Stickers (PNG, WebP, JPEG) */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/png,image/webp,image/jpeg"
-        onChange={handleStickerFileSelected}
-        className="hidden"
-      />
-
       {/* Chat Modal / Drawer */}
       <AnimatePresence>
         {chatOpen && (
@@ -1319,12 +1257,24 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
               className="relative w-full sm:max-w-lg h-[86vh] sm:h-[660px] rounded-t-3xl sm:rounded-3xl bg-[#FFFDF9] border border-[#D5C7B2] flex flex-col overflow-hidden shadow-2xl"
             >
               {/* Modal Header */}
-              <div className="px-4 sm:px-5 py-3.5 border-b border-[#E8DEC8] bg-[#F6EFE3] flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2 min-w-0">
+              <div className="px-4 sm:px-5 py-3 border-b border-[#E8DEC8] bg-[#F6EFE3] flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5 min-w-0">
                   <MessageSquare className="w-5 h-5 text-[#8B5E3C] shrink-0" />
-                  <h3 className="text-base font-extrabold text-[#231A15] truncate">
-                    {isSinglePhone ? t.offlineChatTitle : t.chatTitle}
-                  </h3>
+                  <div className="min-w-0">
+                    <h3 className="text-base font-extrabold text-[#231A15] truncate leading-tight">
+                      {isSinglePhone ? t.offlineChatTitle : t.chatTitle}
+                    </h3>
+                    {remotePresenceInfo.kind && (
+                      <p className="text-[11px] font-extrabold text-[#355432] flex items-center gap-1.5 truncate mt-0.5">
+                        <span
+                          className={`w-2 h-2 rounded-full shrink-0 animate-pulse ${
+                            remotePresenceInfo.kind === 'recording' ? 'bg-[#DC2626]' : 'bg-[#16A34A]'
+                          }`}
+                        />
+                        <span className="truncate">{remotePresenceInfo.label}</span>
+                      </p>
+                    )}
+                  </div>
                 </div>
                 <div className="flex items-center gap-1.5">
                   {!isSinglePhone && chatNotificationsEnabled && notifPerm === 'default' && (
@@ -1341,10 +1291,7 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
                   )}
                   <button
                     type="button"
-                    onClick={() => {
-                      setInspectSticker(null);
-                      setChatOpen(false);
-                    }}
+                    onClick={() => setChatOpen(false)}
                     aria-label={t.close}
                     className="p-2 rounded-xl bg-[#EFE6D6] hover:bg-[#E5DAC5] text-[#5E4F43] hover:text-[#231A15] cursor-pointer"
                   >
@@ -1380,8 +1327,8 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
                 </div>
               )}
 
-              {/* 3 Clear Tabs: Messages | Stickers | Emojis */}
-              <div className="px-3 pt-2.5 pb-2 bg-[#F6EFE3] border-b border-[#E8DEC8] grid grid-cols-3 gap-2">
+              {/* 2 Clear Tabs: Messages | Emojis */}
+              <div className="px-3 pt-2.5 pb-2 bg-[#F6EFE3] border-b border-[#E8DEC8] grid grid-cols-2 gap-2">
                 <button
                   type="button"
                   onClick={() => setActiveTab('messages')}
@@ -1393,24 +1340,6 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
                 >
                   <MessageSquare className="w-3.5 h-3.5" />
                   <span>{t.chatTabMessages}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('stickers')}
-                  className={`min-h-[38px] rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 transition cursor-pointer ${
-                    activeTab === 'stickers'
-                      ? 'bg-[#231A15] text-[#FBF7F0] shadow-xs'
-                      : 'bg-[#FFFDF9] border border-[#DDD2C0] text-[#5E4F43] hover:bg-[#EFE6D6]'
-                  }`}
-                >
-                  <Sticker className="w-3.5 h-3.5" />
-                  <span>{t.chatTabStickers}</span>
-                  {myStickers.length > 0 && (
-                    <span className="font-mono-tabular text-[10px] opacity-80">
-                      ({myStickers.length})
-                    </span>
-                  )}
                 </button>
 
                 <button
@@ -1428,17 +1357,17 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
               </div>
 
               {/* Status / Upload Feedback Toast */}
-              {stickerFeedback && (
+              {chatFeedback && (
                 <div
                   className={`mx-4 mt-2.5 px-3 py-2 rounded-xl text-xs font-bold border ${
-                    stickerFeedback.type === 'error'
+                    chatFeedback.type === 'error'
                       ? 'bg-[#F9EAE6] border-[#C88172] text-[#9B3B30]'
-                      : stickerFeedback.type === 'success'
+                      : chatFeedback.type === 'success'
                         ? 'bg-[#EEF3EC] border-[#B9CEB3] text-[#355432]'
                         : 'bg-[#F3EBDD] border-[#D5C7B2] text-[#5E4F43]'
                   }`}
                 >
-                  {stickerFeedback.text}
+                  {chatFeedback.text}
                 </div>
               )}
 
@@ -1556,8 +1485,18 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
                             isMe ? 'items-end' : 'items-start'
                           } ${isHighlighted ? 'ring-2 ring-[#C7A355] bg-[#FBF5E4]/80' : ''}`}
                         >
-                          {/* Header row: sender, time, quick Reply & React actions */}
+                          {/* Header row: avatar, sender, time, quick Reply & React actions */}
                           <div className="flex items-center gap-2 text-[11px] text-[#7A6A5B] mb-1 px-1">
+                            <PlayerAvatar
+                              name={m.senderName}
+                              paletteId={
+                                isSinglePhone
+                                  ? props.singlePlayers.find((p) => p.id === m.senderId)?.avatarColor ??
+                                    'fox:espresso'
+                                  : props.players[m.senderId]?.avatarColor ?? 'fox:espresso'
+                              }
+                              size="xs"
+                            />
                             <span className="font-bold text-[#5E4F43]">{m.senderName}</span>
                             <span>{timeStr}</span>
                             <button
@@ -1611,68 +1550,7 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
                           )}
 
                           {/* Quoted Reply Block helper rendered inside bubble */}
-                          {m.messageType === 'sticker' && m.stickerUrl ? (
-                            <div className="max-w-[82%] flex flex-col gap-1">
-                              {m.replyToMessageId && (
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    jumpToOriginalMessage(m.replyToMessageId!);
-                                  }}
-                                  className="rounded-xl bg-[#EFE6D6] border-s-4 border-[#8B5E3C] px-2.5 py-1.5 text-start text-[11px] hover:bg-[#E5DAC5] transition cursor-pointer"
-                                >
-                                  <p className="font-extrabold text-[#8B5E3C] truncate">
-                                    {m.replyToSenderName}
-                                  </p>
-                                  <p className="text-[#5E4F43] truncate">{m.replyToPreviewText}</p>
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setInspectSticker({
-                                    stickerId: m.stickerId || m.id,
-                                    imageUrl: m.stickerUrl!,
-                                    storagePath:
-                                      m.stickerStoragePath ||
-                                      `stickers/${m.stickerCreatorId || m.senderId}/${m.stickerId || m.id}`,
-                                    contentHash: m.stickerContentHash || m.stickerId || m.id,
-                                    creatorUid: m.stickerCreatorId || m.senderId,
-                                    creatorName: m.stickerCreatorName || m.senderName,
-                                    fromMyCollection: isStickerAlreadySaved(
-                                      m.stickerId || m.id,
-                                      m.stickerContentHash
-                                    ),
-                                  });
-                                }}
-                                className="group relative rounded-2xl bg-[#FFFDF9] border border-[#DDD2C0] hover:border-[#8B5E3C] p-2 shadow-xs transition cursor-pointer text-start"
-                              >
-                                <img
-                                  src={m.stickerUrl}
-                                  alt={m.stickerCreatorName || 'Sticker'}
-                                  className="w-32 h-32 sm:w-36 sm:h-36 object-contain rounded-xl"
-                                  loading="lazy"
-                                />
-                                <div className="mt-1.5 flex items-center justify-between gap-2 px-1">
-                                  <span className="text-[10px] font-bold text-[#7A6A5B] truncate max-w-[100px]">
-                                    {t.stickerCreatedBy} {m.stickerCreatorName || m.senderName}
-                                  </span>
-                                  {!isMe && (
-                                    <span className="text-[10px] font-extrabold text-[#8B5E3C]">
-                                      {isStickerAlreadySaved(
-                                        m.stickerId || m.id,
-                                        m.stickerContentHash
-                                      )
-                                        ? '✓'
-                                        : '+'}
-                                    </span>
-                                  )}
-                                </div>
-                              </button>
-                            </div>
-                          ) : m.messageType === 'voice' && m.audioUrl ? (
+                          {m.messageType === 'voice' && m.audioUrl ? (
                             <div
                               className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 space-y-2 ${
                                 isMe
@@ -1780,142 +1658,27 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
                       );
                     })
                   )}
+                  {remotePresenceInfo.kind && (
+                    <div className="flex items-start pt-1">
+                      <div className="inline-flex items-center gap-2 rounded-2xl rounded-ts-sm bg-[#EFE6D6] border border-[#DDD2C0] px-3.5 py-2 text-xs font-bold text-[#355432] shadow-xs">
+                        {remotePresenceInfo.kind === 'recording' ? (
+                          <Mic className="w-3.5 h-3.5 text-[#DC2626] animate-pulse shrink-0" />
+                        ) : (
+                          <span className="inline-flex items-center gap-0.5" aria-hidden="true">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#355432] animate-bounce [animation-delay:0ms]" />
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#355432] animate-bounce [animation-delay:150ms]" />
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#355432] animate-bounce [animation-delay:300ms]" />
+                          </span>
+                        )}
+                        <span>{remotePresenceInfo.label}</span>
+                      </div>
+                    </div>
+                  )}
                   <div ref={scrollBottomRef} />
                 </div>
               )}
 
-              {/* TAB 2: STICKERS */}
-              {activeTab === 'stickers' && (
-                <div className="flex-1 overflow-y-auto p-4 space-y-5 bg-[#FBF7F0]">
-                  <section className="space-y-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <div>
-                        <h4 className="text-sm font-extrabold text-[#231A15]">
-                          {t.myStickersTitle}
-                        </h4>
-                        <p className="text-[11px] text-[#7A6A5B]">{t.tapStickerToSaveHint}</p>
-                      </div>
-                      <button
-                        type="button"
-                        disabled={uploadingSticker}
-                        onClick={() => fileInputRef.current?.click()}
-                        className="min-h-[40px] px-3.5 rounded-xl bg-[#231A15] hover:bg-[#3A2C24] text-[#FBF7F0] text-xs font-extrabold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
-                      >
-                        <ImagePlus className="w-4 h-4" />
-                        <span>{uploadingSticker ? t.uploadingSticker : t.addStickerBtn}</span>
-                      </button>
-                    </div>
-
-                    {myStickers.length === 0 ? (
-                      <div className="rounded-2xl border border-dashed border-[#D5C7B2] bg-[#FFFDF9] p-6 text-center space-y-2">
-                        <Sticker className="w-8 h-8 text-[#8B5E3C] mx-auto opacity-75" />
-                        <p className="text-xs font-bold text-[#6E5E50]">{t.noMyStickersYet}</p>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2.5">
-                        {myStickers.map((stk) => (
-                          <div
-                            key={stk.stickerId}
-                            className="group relative rounded-2xl bg-[#FFFDF9] border border-[#DDD2C0] hover:border-[#8B5E3C] p-2 flex flex-col items-center gap-1 shadow-xs"
-                          >
-                            <button
-                              type="button"
-                              onClick={() => void handleSendSticker(stk)}
-                              className="w-full aspect-square flex items-center justify-center cursor-pointer"
-                              title={t.sendStickerBtn}
-                            >
-                              <img
-                                src={stk.imageUrl}
-                                alt={stk.creatorName}
-                                className="w-full h-full object-contain rounded-xl"
-                                loading="lazy"
-                              />
-                            </button>
-                            <div className="w-full flex items-center justify-between gap-1 px-0.5">
-                              <span className="text-[10px] font-semibold text-[#7A6A5B] truncate">
-                                {stk.creatorName}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => void handleDeleteMySticker(stk.stickerId)}
-                                aria-label={t.deleteStickerBtn}
-                                className="p-1 rounded-lg text-[#9C8D7E] hover:text-[#9B3B30] hover:bg-[#F9EAE6] cursor-pointer"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </section>
-
-                  <section className="space-y-2.5 pt-2 border-t border-[#E8DEC8]">
-                    <h4 className="text-sm font-extrabold text-[#231A15]">
-                      {t.roomStickersTitle}
-                    </h4>
-
-                    {roomOtherStickers.length === 0 ? (
-                      <p className="text-xs text-[#7A6A5B] py-3">{t.noRoomStickersYet}</p>
-                    ) : (
-                      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2.5">
-                        {roomOtherStickers.map((item) => {
-                          const alreadySaved = isStickerAlreadySaved(
-                            item.stickerId,
-                            item.contentHash
-                          );
-                          return (
-                            <div
-                              key={item.stickerId}
-                              className="rounded-2xl bg-[#FFFDF9] border border-[#DDD2C0] p-2 flex flex-col items-center gap-1.5"
-                            >
-                              <button
-                                type="button"
-                                onClick={() => setInspectSticker(item)}
-                                className="w-full aspect-square flex items-center justify-center cursor-pointer"
-                              >
-                                <img
-                                  src={item.imageUrl}
-                                  alt={item.creatorName}
-                                  className="w-full h-full object-contain rounded-xl"
-                                  loading="lazy"
-                                />
-                              </button>
-                              <span className="text-[10px] font-bold text-[#7A6A5B] truncate w-full text-center">
-                                {item.creatorName}
-                              </span>
-                              <button
-                                type="button"
-                                disabled={alreadySaved || savingStickerId === item.stickerId}
-                                onClick={() => void handleSaveOtherSticker(item)}
-                                className={`w-full py-1 px-1.5 rounded-lg text-[10px] font-extrabold flex items-center justify-center gap-1 cursor-pointer ${
-                                  alreadySaved
-                                    ? 'bg-[#EEF3EC] text-[#355432] cursor-default'
-                                    : 'bg-[#EFE6D6] hover:bg-[#E5DAC5] text-[#231A15]'
-                                }`}
-                              >
-                                {alreadySaved ? (
-                                  <>
-                                    <BookmarkCheck className="w-3 h-3 shrink-0" />
-                                    <span className="truncate">{t.stickerAlreadySavedBadge}</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <BookmarkPlus className="w-3 h-3 shrink-0 text-[#8B5E3C]" />
-                                    <span className="truncate">{t.addToMyStickersBtn}</span>
-                                  </>
-                                )}
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </section>
-                </div>
-              )}
-
-              {/* TAB 3: EMOJI PICKER */}
+              {/* TAB 2: EMOJI PICKER */}
               {activeTab === 'emojis' && (
                 <div className="flex-1 flex flex-col overflow-hidden bg-[#FBF7F0]">
                   <div className="px-3 py-2.5 border-b border-[#E8DEC8] bg-[#FFFDF9] flex items-center gap-1.5 overflow-x-auto">
@@ -1978,71 +1741,6 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
                 </div>
               )}
 
-              {/* Tap-Sticker Popover */}
-              <AnimatePresence>
-                {inspectSticker && (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="absolute inset-0 z-20 bg-[#231A15]/60 backdrop-blur-[2px] flex items-center justify-center p-4"
-                    onClick={() => setInspectSticker(null)}
-                  >
-                    <motion.div
-                      initial={{ scale: 0.94, opacity: 0 }}
-                      animate={{ scale: 1, opacity: 1 }}
-                      exit={{ scale: 0.94, opacity: 0 }}
-                      onClick={(e) => e.stopPropagation()}
-                      className="w-full max-w-xs rounded-3xl bg-[#FFFDF9] border-2 border-[#D5C7B2] p-5 space-y-4 text-center shadow-2xl"
-                    >
-                      <div className="mx-auto w-36 h-36 rounded-2xl bg-[#FBF7F0] border border-[#E8DEC8] p-2 flex items-center justify-center">
-                        <img
-                          src={inspectSticker.imageUrl}
-                          alt={inspectSticker.creatorName}
-                          className="w-full h-full object-contain rounded-xl"
-                        />
-                      </div>
-
-                      <div className="space-y-1">
-                        <p className="text-xs font-extrabold text-[#8B5E3C]">
-                          {t.stickerCreatedBy}: {inspectSticker.creatorName}
-                        </p>
-                      </div>
-
-                      <div className="space-y-2">
-                        {isStickerAlreadySaved(
-                          inspectSticker.stickerId,
-                          inspectSticker.contentHash
-                        ) ? (
-                          <div className="w-full py-2.5 px-4 rounded-2xl bg-[#EEF3EC] border border-[#B9CEB3] text-[#355432] text-xs font-extrabold flex items-center justify-center gap-1.5">
-                            <BookmarkCheck className="w-4 h-4" />
-                            <span>{t.stickerAlreadySavedBadge}</span>
-                          </div>
-                        ) : (
-                          <button
-                            type="button"
-                            disabled={savingStickerId === inspectSticker.stickerId}
-                            onClick={() => void handleSaveOtherSticker(inspectSticker)}
-                            className="w-full min-h-[44px] px-4 rounded-2xl bg-[#231A15] hover:bg-[#3A2C24] text-[#FBF7F0] text-sm font-extrabold flex items-center justify-center gap-2 cursor-pointer"
-                          >
-                            <BookmarkPlus className="w-4 h-4 text-[#D7BD7B]" />
-                            <span>{t.addToMyStickersBtn}</span>
-                          </button>
-                        )}
-
-                        <button
-                          type="button"
-                          onClick={() => setInspectSticker(null)}
-                          className="w-full min-h-[40px] px-4 rounded-2xl bg-[#EFE6D6] hover:bg-[#E5DAC5] text-[#231A15] text-xs font-bold cursor-pointer"
-                        >
-                          {t.close}
-                        </button>
-                      </div>
-                    </motion.div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
               {/* WhatsApp-Style Reply Preview Banner Above Composer */}
               {replyTo && (
                 <div className="px-3.5 py-2 bg-[#F3EBDD] border-t border-[#E8DEC8] flex items-center justify-between gap-3">
@@ -2079,7 +1777,7 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
                     <span className="w-2.5 h-2.5 rounded-full bg-[#9B3B30] animate-pulse" />
                     <span>{t.recordingVoiceLabel}</span>
                     <span dir="ltr" className="font-mono-tabular text-[#8B5E3C]">
-                      {formatMmSs(recordSeconds)}
+                      {formatMmSs(recordSeconds)} / {formatMmSs(MAX_VOICE_SECONDS)}
                     </span>
                   </div>
 

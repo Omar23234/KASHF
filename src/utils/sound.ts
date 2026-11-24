@@ -71,4 +71,17 @@ export const soundFX = {
     playTone(783.99, 0.18, 'triangle', 0.08, 0.2);
     playTone(1046.5, 0.35, 'sine', 0.09, 0.3);
   },
+  secretCardFanfare(enabled: boolean) {
+    if (!enabled) return;
+    playTone(440, 0.12, 'triangle', 0.06, 0, 554.37);
+    playTone(659.25, 0.14, 'triangle', 0.07, 0.08, 880);
+    playTone(880, 0.22, 'sine', 0.08, 0.16);
+    playTone(1174.66, 0.36, 'sine', 0.09, 0.24);
+  },
+  roundComplete(enabled: boolean) {
+    if (!enabled) return;
+    playTone(440, 0.14, 'sine', 0.06, 0);
+    playTone(554.37, 0.16, 'sine', 0.06, 0.09);
+    playTone(659.25, 0.24, 'triangle', 0.07, 0.18);
+  },
 };

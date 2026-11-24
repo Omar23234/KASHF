@@ -27,11 +27,13 @@ import {
   startOrRestartMultiplayerGame,
   subscribeToRoomAndPlayers,
   updateLobbySettings,
+  updateMyLobbyAvatar,
 } from '../firebase/multiplayerService';
-import { useWebRTCVoiceChat } from '../hooks/useWebRTCVoiceChat';
+import { useVoiceChat } from '../context/VoiceContext';
 import type { RoomDoc, RoomPlayerDoc } from '../types/game';
 import { formatMultiplayerError } from '../utils/errorMessages';
 import { soundFX } from '../utils/sound';
+import { AvatarPickerModal } from './AvatarPickerModal';
 import { PlayerAvatar } from './PlayerAvatar';
 import { RoomChatVoicePanel } from './RoomChatVoicePanel';
 
@@ -44,14 +46,20 @@ export const OnlineLobbyScreen: React.FC = () => {
   const [copied, setCopied] = useState(false);
   const [starting, setStarting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
   const lastClampedRef = useRef<string | null>(null);
 
-  const voice = useWebRTCVoiceChat({
-    roomCode: activeRoomCode,
-    myUid: authUser?.uid ?? '',
-    players,
-    playerOrder: room?.playerOrder ?? [],
-  });
+  const voice = useVoiceChat();
+  const { setVoiceRoomMeta, clearVoiceRoomMeta } = voice;
+
+  useEffect(() => {
+    setVoiceRoomMeta({
+      roomCode: activeRoomCode,
+      myUid: authUser?.uid ?? '',
+      players,
+      playerOrder: room?.playerOrder ?? [],
+    });
+  }, [activeRoomCode, authUser?.uid, players, room?.playerOrder, setVoiceRoomMeta]);
 
   useEffect(() => {
     if (!activeRoomCode) {
@@ -64,12 +72,14 @@ export const OnlineLobbyScreen: React.FC = () => {
       (nextRoom, nextPlayers) => {
         setLoading(false);
         if (!nextRoom || nextRoom.status === 'closed') {
+          clearVoiceRoomMeta();
           saveActiveRoom(null);
           setActiveRoomCode(null);
           setScreen('home');
           return;
         }
         if (authUser && !nextRoom.playerOrder.includes(authUser.uid)) {
+          clearVoiceRoomMeta();
           saveActiveRoom(null);
           setActiveRoomCode(null);
           setScreen('online_entry');
@@ -111,7 +121,7 @@ export const OnlineLobbyScreen: React.FC = () => {
       document.removeEventListener('visibilitychange', handleVis);
       window.removeEventListener('pagehide', handleUnload);
     };
-  }, [activeRoomCode, authUser, setActiveRoomCode, setScreen]);
+  }, [activeRoomCode, authUser, clearVoiceRoomMeta, setActiveRoomCode, setScreen, t]);
 
   // Auto-clamp host roundsCount whenever players join so players x rounds <= 63
   useEffect(() => {
@@ -199,8 +209,10 @@ export const OnlineLobbyScreen: React.FC = () => {
     soundFX.tap(soundEnabled);
     try {
       await voice.leaveVoice();
+      clearVoiceRoomMeta();
       await leaveMultiplayerRoom(room.roomCode);
     } catch {
+      clearVoiceRoomMeta();
       // still exit room locally if disconnect already happened
     } finally {
       setActiveRoomCode(null);
@@ -257,10 +269,12 @@ export const OnlineLobbyScreen: React.FC = () => {
         voiceJoined={voice.voiceJoined}
         micMuted={voice.micMuted}
         voiceError={voice.voiceError}
+        voiceAudioBlocked={voice.audioBlocked}
         speakingUids={voice.speakingUids}
         onJoinVoice={() => void voice.joinVoice()}
         onLeaveVoice={() => void voice.leaveVoice()}
         onToggleMute={() => void voice.toggleMute()}
+        onUnlockVoiceAudio={voice.unlockAudio}
       />
 
       {/* Two-Column Lobby Grid */}
@@ -283,7 +297,22 @@ export const OnlineLobbyScreen: React.FC = () => {
               return (
                 <li key={pid} className="py-3 flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
-                    <PlayerAvatar name={p.name} paletteId={p.avatarColor} size="md" active={p.isHost || isSpeaking} />
+                    <PlayerAvatar
+                      name={p.name}
+                      paletteId={p.avatarColor}
+                      size="md"
+                      active={p.isHost || isSpeaking}
+                      editable={isMe}
+                      ariaLabel={isMe ? t.chooseAvatarTitle : undefined}
+                      onClick={
+                        isMe
+                          ? () => {
+                              soundFX.tap(soundEnabled);
+                              setAvatarPickerOpen(true);
+                            }
+                          : undefined
+                      }
+                    />
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-bold text-[#231A15] truncate">{p.name}</span>
@@ -545,6 +574,21 @@ export const OnlineLobbyScreen: React.FC = () => {
           )}
         </div>
       </div>
+
+      <AvatarPickerModal
+        open={avatarPickerOpen}
+        playerName={players[authUser?.uid ?? '']?.name ?? ''}
+        initialAvatar={players[authUser?.uid ?? '']?.avatarColor ?? 'fox:espresso'}
+        onClose={() => setAvatarPickerOpen(false)}
+        onSave={async (nextAvatar) => {
+          setErrorMsg('');
+          try {
+            await updateMyLobbyAvatar(room.roomCode, nextAvatar);
+          } catch (err) {
+            setErrorMsg(formatMultiplayerError(err, t));
+          }
+        }}
+      />
     </div>
   );
 };

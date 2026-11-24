@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowRight, KeyRound, Layers, Loader2, PlusCircle, RefreshCw, ShieldAlert } from 'lucide-react';
 import { motion } from 'motion/react';
+import { pickDefaultAvatar } from '../config/brand';
 import { useApp } from '../context/AppContext';
 import { TOTAL_QUESTIONS_COUNT } from '../data/questions';
 import {
@@ -8,13 +9,17 @@ import {
   ensureAnonymousAuth,
   getMaxRoundsForPlayers,
   getSavedActiveRoom,
+  getSavedPlayerAvatar,
   getSavedPlayerName,
   joinMultiplayerRoom,
   saveActiveRoom,
+  savePlayerAvatar,
 } from '../firebase/multiplayerService';
 import type { GameLengthMode } from '../types/game';
 import { formatMultiplayerError } from '../utils/errorMessages';
 import { soundFX } from '../utils/sound';
+import { AvatarPickerModal } from './AvatarPickerModal';
+import { PlayerAvatar } from './PlayerAvatar';
 
 interface OnlineEntryScreenProps {
   initialRoomCode?: string;
@@ -24,6 +29,10 @@ export const OnlineEntryScreen: React.FC<OnlineEntryScreenProps> = ({ initialRoo
   const { language, t, soundEnabled, setScreen, setActiveRoomCode, authUser } = useApp();
   const [tab, setTab] = useState<'create' | 'join'>(initialRoomCode ? 'join' : 'create');
   const [name, setName] = useState(() => getSavedPlayerName());
+  const [avatarColor, setAvatarColor] = useState(
+    () => getSavedPlayerAvatar() || pickDefaultAvatar(getSavedPlayerName() || 'player')
+  );
+  const [avatarModalOpen, setAvatarModalOpen] = useState(false);
   const [roomCodeInput, setRoomCodeInput] = useState(initialRoomCode.toUpperCase());
   const [gameMode, setGameMode] = useState<GameLengthMode>('rounds');
   const [roundsCount, setRoundsCount] = useState(3);
@@ -64,6 +73,7 @@ export const OnlineEntryScreen: React.FC<OnlineEntryScreenProps> = ({ initialRoo
     try {
       const code = await createMultiplayerRoom({
         hostName: name,
+        avatarColor,
         language,
         gameMode,
         roundsCount,
@@ -97,6 +107,7 @@ export const OnlineEntryScreen: React.FC<OnlineEntryScreenProps> = ({ initialRoo
       const res = await joinMultiplayerRoom({
         rawCode: normalized,
         playerName: name,
+        avatarColor,
       });
       setActiveRoomCode(res.roomCode);
       setScreen('online_lobby');
@@ -116,6 +127,7 @@ export const OnlineEntryScreen: React.FC<OnlineEntryScreenProps> = ({ initialRoo
       await joinMultiplayerRoom({
         rawCode: savedRoom,
         playerName: name.trim() || getSavedPlayerName() || 'Player',
+        avatarColor,
       });
       setActiveRoomCode(savedRoom);
       setScreen('online_lobby');
@@ -256,14 +268,39 @@ export const OnlineEntryScreen: React.FC<OnlineEntryScreenProps> = ({ initialRoo
             <form onSubmit={handleCreateRoom} className="space-y-5">
               <div className="space-y-2">
                 <label className="block text-sm font-bold text-[#231A15]">{t.yourName}</label>
-                <input
-                  type="text"
-                  maxLength={24}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder={t.yourNamePlaceholder}
-                  className="w-full min-h-[48px] px-4 rounded-2xl bg-[#FBF7F0] border border-[#D5C7B2] focus:border-[#8B5E3C] focus:outline-none text-[#231A15] placeholder:text-[#9C8D7E] text-base"
-                />
+                <div className="flex items-center gap-3">
+                  <PlayerAvatar
+                    name={name || 'Player'}
+                    paletteId={avatarColor}
+                    size="lg"
+                    editable
+                    ariaLabel={t.chooseAvatarTitle}
+                    onClick={() => {
+                      soundFX.tap(soundEnabled);
+                      setAvatarModalOpen(true);
+                    }}
+                  />
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <input
+                      type="text"
+                      maxLength={24}
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder={t.yourNamePlaceholder}
+                      className="w-full min-h-[48px] px-4 rounded-2xl bg-[#FBF7F0] border border-[#D5C7B2] focus:border-[#8B5E3C] focus:outline-none text-[#231A15] placeholder:text-[#9C8D7E] text-base"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        soundFX.tap(soundEnabled);
+                        setAvatarModalOpen(true);
+                      }}
+                      className="text-xs font-bold text-[#8B5E3C] hover:text-[#231A15] cursor-pointer"
+                    >
+                      {t.chooseAvatarTitle} · {t.tapAvatarHint}
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* Game Length Selection: Rounds vs Play All Questions */}
@@ -408,14 +445,39 @@ export const OnlineEntryScreen: React.FC<OnlineEntryScreenProps> = ({ initialRoo
 
               <div className="space-y-2">
                 <label className="block text-sm font-bold text-[#231A15]">{t.yourName}</label>
-                <input
-                  type="text"
-                  maxLength={24}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder={t.yourNamePlaceholder}
-                  className="w-full min-h-[48px] px-4 rounded-2xl bg-[#FBF7F0] border border-[#D5C7B2] focus:border-[#8B5E3C] focus:outline-none text-[#231A15] placeholder:text-[#9C8D7E] text-base"
-                />
+                <div className="flex items-center gap-3">
+                  <PlayerAvatar
+                    name={name || 'Player'}
+                    paletteId={avatarColor}
+                    size="lg"
+                    editable
+                    ariaLabel={t.chooseAvatarTitle}
+                    onClick={() => {
+                      soundFX.tap(soundEnabled);
+                      setAvatarModalOpen(true);
+                    }}
+                  />
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <input
+                      type="text"
+                      maxLength={24}
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder={t.yourNamePlaceholder}
+                      className="w-full min-h-[48px] px-4 rounded-2xl bg-[#FBF7F0] border border-[#D5C7B2] focus:border-[#8B5E3C] focus:outline-none text-[#231A15] placeholder:text-[#9C8D7E] text-base"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        soundFX.tap(soundEnabled);
+                        setAvatarModalOpen(true);
+                      }}
+                      className="text-xs font-bold text-[#8B5E3C] hover:text-[#231A15] cursor-pointer"
+                    >
+                      {t.chooseAvatarTitle} · {t.tapAvatarHint}
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {errorMsg && (
@@ -443,6 +505,17 @@ export const OnlineEntryScreen: React.FC<OnlineEntryScreenProps> = ({ initialRoo
           )}
         </div>
       </div>
+
+      <AvatarPickerModal
+        open={avatarModalOpen}
+        playerName={name}
+        initialAvatar={avatarColor}
+        onClose={() => setAvatarModalOpen(false)}
+        onSave={(nextAvatar) => {
+          setAvatarColor(nextAvatar);
+          savePlayerAvatar(nextAvatar);
+        }}
+      />
     </motion.div>
   );
 };

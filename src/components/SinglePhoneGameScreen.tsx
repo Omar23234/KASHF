@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ArrowRight, CheckCircle2, Home, RotateCcw, Shield, Smartphone, Trophy, Users } from 'lucide-react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useApp } from '../context/AppContext';
@@ -11,6 +11,7 @@ import {
   CardEventBanner,
   CardInventoryBar,
   CardRewardOverlay,
+  RoundResultsModal,
   TurnModeNotice,
 } from './SpecialCardModals';
 
@@ -40,6 +41,28 @@ export const SinglePhoneGameScreen: React.FC<SinglePhoneGameScreenProps> = ({
 }) => {
   const { language, t, soundEnabled } = useApp();
   const [dismissedAwardNonce, setDismissedAwardNonce] = useState<number>(0);
+  const [completedRoundSummary, setCompletedRoundSummary] = useState<number | null>(null);
+  const prevRoundRef = useRef<number | null>(null);
+  const prevPhaseRef = useRef<SinglePhoneGameState['phase'] | null>(null);
+
+  useEffect(() => {
+    if (game.phase !== 'playing') {
+      setCompletedRoundSummary(null);
+      prevRoundRef.current = null;
+      prevPhaseRef.current = game.phase;
+      return;
+    }
+    if (
+      prevPhaseRef.current === 'playing' &&
+      prevRoundRef.current !== null &&
+      game.currentRound > prevRoundRef.current
+    ) {
+      setCompletedRoundSummary(prevRoundRef.current);
+      soundFX.roundComplete(soundEnabled);
+    }
+    prevRoundRef.current = game.currentRound;
+    prevPhaseRef.current = game.phase;
+  }, [game.phase, game.currentRound, soundEnabled]);
 
   if (game.phase === 'finished' || game.phase === 'exhausted') {
     const isExhausted = game.phase === 'exhausted';
@@ -114,6 +137,7 @@ export const SinglePhoneGameScreen: React.FC<SinglePhoneGameScreenProps> = ({
               onClick={() => {
                 soundFX.cardDeal(soundEnabled);
                 setDismissedAwardNonce(0);
+                setCompletedRoundSummary(null);
                 onPlayAgain();
               }}
               className="flex-1 min-h-[50px] rounded-2xl bg-[#231A15] hover:bg-[#3A2C24] text-[#FBF7F0] font-bold flex items-center justify-center gap-2 transition cursor-pointer"
@@ -157,7 +181,8 @@ export const SinglePhoneGameScreen: React.FC<SinglePhoneGameScreenProps> = ({
   const remainingQuestions = Math.max(0, TOTAL_QUESTIONS_COUNT - game.usedQuestionIds.length);
 
   const showRewardModal = Boolean(
-    game.lastCardEvent?.type === 'awarded' &&
+    completedRoundSummary === null &&
+      game.lastCardEvent?.type === 'awarded' &&
       game.lastCardEvent.nonce === game.turnNonce &&
       dismissedAwardNonce !== game.turnNonce
   );
@@ -230,7 +255,8 @@ export const SinglePhoneGameScreen: React.FC<SinglePhoneGameScreenProps> = ({
             onUseAntiSwitchCard();
           }}
           otherPlayers={otherPlayers}
-          remainingDeckCards={game.availableSpecialCards.length}
+          privateToggleMode
+          resetKey={activePlayer?.id ?? ''}
         />
       )}
 
@@ -281,7 +307,7 @@ export const SinglePhoneGameScreen: React.FC<SinglePhoneGameScreenProps> = ({
         switchSourceName={switchSourceName}
       />
 
-      {/* Offline Chat, Personal Stickers & Emoji Picker */}
+      {/* Offline Chat, Voice Notes & Emoji Picker */}
       <RoomChatVoicePanel
         mode="single_phone"
         singlePlayers={game.players}
@@ -363,13 +389,6 @@ export const SinglePhoneGameScreen: React.FC<SinglePhoneGameScreenProps> = ({
                     <PlayerAvatar name={p.name} paletteId={p.avatarColor} size="sm" active={isTurn} />
                     <div className="min-w-0">
                       <span className="text-sm font-bold text-[#231A15] truncate block">{p.name}</span>
-                      {((p.goldCards ?? 0) > 0 || (p.switchCards ?? 0) > 0 || (p.antiSwitchCards ?? 0) > 0) && (
-                        <span className="text-[10px] font-bold text-[#8B5E3C]">
-                          {p.goldCards ? `G:${p.goldCards} ` : ''}
-                          {p.switchCards ? `S:${p.switchCards} ` : ''}
-                          {p.antiSwitchCards ? `A:${p.antiSwitchCards}` : ''}
-                        </span>
-                      )}
                     </div>
                   </div>
                   <span
@@ -387,11 +406,29 @@ export const SinglePhoneGameScreen: React.FC<SinglePhoneGameScreenProps> = ({
         </aside>
       </div>
 
-      {/* Special Card Reward Celebration Overlay */}
+      {/* Round-End Results Summary Modal */}
+      <RoundResultsModal
+        visible={completedRoundSummary !== null && game.phase === 'playing'}
+        completedRound={completedRoundSummary}
+        totalRounds={game.roundsCount}
+        gameMode={game.gameMode}
+        players={game.players.map((p) => ({
+          uid: p.id,
+          name: p.name,
+          avatarColor: p.avatarColor,
+          score: p.score ?? 0,
+        }))}
+        showSkips={false}
+        onContinue={() => setCompletedRoundSummary(null)}
+      />
+
+      {/* Special Card Reward Celebration Overlay (Tap-to-Reveal Private Shield) */}
       <CardRewardOverlay
         visible={showRewardModal}
         cardId={game.lastCardEvent?.cardId ?? null}
         recipientName={game.lastCardEvent?.actorName ?? ''}
+        requireTapToReveal
+        onReveal={() => soundFX.secretCardFanfare(soundEnabled)}
         onContinue={() => setDismissedAwardNonce(game.turnNonce)}
       />
 
@@ -405,9 +442,9 @@ export const SinglePhoneGameScreen: React.FC<SinglePhoneGameScreenProps> = ({
                 soundFX.turnAlert(soundEnabled);
                 onUseAntiSwitchCard();
               }}
-              className="min-h-[52px] px-4 sm:px-5 rounded-2xl bg-[#F9EAE6] hover:bg-[#F3DDD7] border-2 border-[#B45E4D] text-[#843B2E] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 transition cursor-pointer shrink-0"
+              className="min-h-[52px] px-4 sm:px-5 rounded-2xl bg-[#FEE2E2] hover:bg-[#FECACA] border-2 border-[#DC2626] text-[#7F1D1D] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 transition cursor-pointer shrink-0 shadow-sm"
             >
-              <Shield className="w-4 h-4 text-[#8F4A3B] shrink-0" />
+              <Shield className="w-4 h-4 text-[#B91C1C] shrink-0" />
               <span>{t.defendWithAntiSwitchBtn}</span>
             </button>
           )}

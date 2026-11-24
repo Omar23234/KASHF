@@ -477,7 +477,7 @@ service cloud.firestore {
         && isValidId(data.replyToMessageId)
         && data.replyToSenderName is string && data.replyToSenderName.size() >= 1 && data.replyToSenderName.size() <= 24
         && data.replyToPreviewText is string && data.replyToPreviewText.size() >= 1 && data.replyToPreviewText.size() <= 160
-        && data.replyToType in ['text', 'sticker', 'voice']
+        && data.replyToType in ['text', 'voice']
       );
     }
 
@@ -485,8 +485,7 @@ service cloud.firestore {
       return data.keys().hasAll(['senderId', 'senderName', 'text', 'memberIds', 'createdAt'])
         && data.keys().hasOnly([
           'senderId', 'senderName', 'text', 'memberIds', 'createdAt',
-          'messageType', 'stickerId', 'stickerUrl', 'stickerStoragePath',
-          'stickerCreatorId', 'stickerCreatorName', 'stickerContentHash',
+          'messageType',
           'audioUrl', 'audioStoragePath', 'audioDurationSec', 'audioMimeType',
           'replyToMessageId', 'replyToSenderName', 'replyToPreviewText', 'replyToType'
         ])
@@ -501,32 +500,6 @@ service cloud.firestore {
           (
             (!('messageType' in data) || data.messageType == 'text')
             && data.text is string && data.text.size() >= 1 && data.text.size() <= 500
-            && !('stickerId' in data)
-            && !('stickerUrl' in data)
-            && !('stickerStoragePath' in data)
-            && !('stickerCreatorId' in data)
-            && !('stickerCreatorName' in data)
-            && !('stickerContentHash' in data)
-            && !('audioUrl' in data)
-            && !('audioStoragePath' in data)
-            && !('audioDurationSec' in data)
-            && !('audioMimeType' in data)
-          )
-          || (
-            ('messageType' in data && data.messageType == 'sticker')
-            && data.keys().hasAll([
-              'messageType', 'stickerId', 'stickerUrl', 'stickerStoragePath',
-              'stickerCreatorId', 'stickerCreatorName', 'stickerContentHash'
-            ])
-            && data.text is string && data.text.size() >= 1 && data.text.size() <= 100
-            && isValidId(data.stickerId)
-            && data.stickerUrl is string && data.stickerUrl.size() >= 10 && data.stickerUrl.size() <= 2048
-            && data.stickerUrl.matches('^https://.*')
-            && data.stickerStoragePath is string && data.stickerStoragePath.size() >= 3 && data.stickerStoragePath.size() <= 512
-            && isValidId(data.stickerCreatorId)
-            && data.stickerCreatorName is string && data.stickerCreatorName.size() >= 1 && data.stickerCreatorName.size() <= 24
-            && data.stickerContentHash is string && data.stickerContentHash.size() >= 8 && data.stickerContentHash.size() <= 128
-            && data.stickerContentHash.matches('^[a-zA-Z0-9_\\-]+$')
             && !('audioUrl' in data)
             && !('audioStoragePath' in data)
             && !('audioDurationSec' in data)
@@ -538,14 +511,19 @@ service cloud.firestore {
               'messageType', 'audioUrl', 'audioStoragePath', 'audioDurationSec', 'audioMimeType'
             ])
             && data.text is string && data.text.size() >= 1 && data.text.size() <= 100
-            && data.audioUrl is string && data.audioUrl.size() >= 10 && data.audioUrl.size() <= 2048
-            && data.audioUrl.matches('^https://.*')
+            && data.audioUrl is string
+            && (
+              (data.audioUrl.size() >= 10 && data.audioUrl.size() <= 2048 && data.audioUrl.matches('^https://.*'))
+              || (
+                data.audioUrl.size() >= 30
+                && data.audioUrl.size() <= 700000
+                && data.audioUrl.matches('^data:audio/[a-zA-Z0-9.+_-]+;base64,[A-Za-z0-9+/=]+$')
+              )
+            )
             && data.audioStoragePath is string && data.audioStoragePath.size() >= 3 && data.audioStoragePath.size() <= 512
-            && data.audioDurationSec is int && data.audioDurationSec >= 1 && data.audioDurationSec <= 300
+            && data.audioDurationSec is int && data.audioDurationSec >= 1 && data.audioDurationSec <= 180
             && data.audioMimeType is string && data.audioMimeType.size() >= 3 && data.audioMimeType.size() <= 64
             && data.audioMimeType.matches('^audio/.*')
-            && !('stickerId' in data)
-            && !('stickerUrl' in data)
           )
         );
     }
@@ -569,26 +547,22 @@ service cloud.firestore {
         && data.updatedAt == request.time;
     }
 
-    function isValidPersonalSticker(data) {
+    function isValidChatPresence(data) {
       return data.keys().hasAll([
-          'stickerId', 'ownerId', 'creatorUid', 'creatorName',
-          'imageUrl', 'storagePath', 'contentHash', 'isSavedFromOther', 'createdAt'
+          'uid', 'name', 'status', 'memberIds', 'expiresAtMs', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'stickerId', 'ownerId', 'creatorUid', 'creatorName',
-          'imageUrl', 'storagePath', 'contentHash', 'isSavedFromOther', 'createdAt'
+          'uid', 'name', 'status', 'memberIds', 'expiresAtMs', 'updatedAt'
         ])
-        && isValidId(data.stickerId)
-        && isValidId(data.ownerId)
-        && isValidId(data.creatorUid)
-        && data.creatorName is string && data.creatorName.size() >= 1 && data.creatorName.size() <= 24
-        && data.imageUrl is string && data.imageUrl.size() >= 10 && data.imageUrl.size() <= 2048
-        && data.imageUrl.matches('^https://.*')
-        && data.storagePath is string && data.storagePath.size() >= 3 && data.storagePath.size() <= 512
-        && data.contentHash is string && data.contentHash.size() >= 8 && data.contentHash.size() <= 128
-        && data.contentHash.matches('^[a-zA-Z0-9_\\-]+$')
-        && data.isSavedFromOther is bool
-        && data.createdAt is timestamp;
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 24
+        && data.status in ['idle', 'typing', 'recording']
+        && data.memberIds is list && data.memberIds.size() >= 1 && data.memberIds.size() <= 12
+        && (data.memberIds[0] is string)
+        && request.auth.uid in data.memberIds
+        && data.expiresAtMs is int && data.expiresAtMs >= 0
+        && data.updatedAt == request.time;
     }
 
     match /rooms/{roomId} {
@@ -691,6 +665,14 @@ service cloud.firestore {
             (
               playerId == request.auth.uid
               && incoming().diff(existing()).affectedKeys().hasOnly(['connected', 'voiceJoined', 'micMuted', 'lastSeenAt'])
+              && incoming().lastSeenAt == request.time
+            )
+            ||
+            // Self avatar update while waiting in lobby
+            (
+              playerId == request.auth.uid
+              && get(/databases/$(database)/documents/rooms/$(roomId)).data.status == 'waiting'
+              && incoming().diff(existing()).affectedKeys().hasOnly(['avatarColor', 'lastSeenAt'])
               && incoming().lastSeenAt == request.time
             )
             ||
@@ -860,7 +842,7 @@ service cloud.firestore {
           && !(playerId in getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.playerOrder);
       }
 
-      // Room-Scoped Real-Time Text & Sticker Chat
+      // Room-Scoped Real-Time Text & Voice Chat
       match /messages/{messageId} {
         allow get: if isSignedIn()
           && isValidRoomCode(roomId)
@@ -911,6 +893,29 @@ service cloud.firestore {
           && existing().userId == request.auth.uid;
       }
 
+      // Ephemeral Room Chat Typing & Recording Presence
+      match /chatPresence/{presenceUid} {
+        allow get: if isSignedIn()
+          && isValidRoomCode(roomId)
+          && isValidId(presenceUid)
+          && isRoomMember(roomId);
+        allow list: if isSignedIn()
+          && isValidRoomCode(roomId)
+          && request.auth.uid in resource.data.memberIds;
+
+        allow create, update: if isSignedIn()
+          && isValidRoomCode(roomId)
+          && isValidId(presenceUid)
+          && presenceUid == request.auth.uid
+          && isRoomMember(roomId)
+          && isValidChatPresence(incoming());
+
+        allow delete: if isSignedIn()
+          && isValidRoomCode(roomId)
+          && isValidId(presenceUid)
+          && presenceUid == request.auth.uid;
+      }
+
       // Ephemeral WebRTC Voice Signaling (SDP & ICE only - zero audio stored)
       match /voiceSignals/{signalId} {
         allow get: if isSignedIn()
@@ -940,35 +945,6 @@ service cloud.firestore {
           && isValidRoomCode(roomId)
           && (existing().toUid == request.auth.uid || existing().fromUid == request.auth.uid);
       }
-    }
-
-    // Player Personal & Saved Sticker Collections (Owner-Isolated, Storage URLs Only)
-    match /playerStickers/{playerId}/items/{stickerId} {
-      allow get: if isSignedIn()
-        && isValidId(playerId)
-        && isValidId(stickerId)
-        && playerId == request.auth.uid;
-      allow list: if isSignedIn()
-        && isValidId(playerId)
-        && playerId == request.auth.uid
-        && resource.data.ownerId == request.auth.uid;
-
-      allow create: if isSignedIn()
-        && isValidId(playerId)
-        && isValidId(stickerId)
-        && playerId == request.auth.uid
-        && isValidPersonalSticker(incoming())
-        && incoming().stickerId == stickerId
-        && incoming().ownerId == request.auth.uid
-        && incoming().createdAt == request.time;
-
-      allow update: if false;
-
-      allow delete: if isSignedIn()
-        && isValidId(playerId)
-        && isValidId(stickerId)
-        && playerId == request.auth.uid
-        && existing().ownerId == request.auth.uid;
     }
   }
 }

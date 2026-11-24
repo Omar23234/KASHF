@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { Check, Edit3, Layers, Play, Plus, Trash2, Users } from 'lucide-react';
 import { motion } from 'motion/react';
-import { pickAvatarPalette } from '../config/brand';
+import { pickDefaultAvatar } from '../config/brand';
 import { useApp } from '../context/AppContext';
 import { TOTAL_QUESTIONS_COUNT } from '../data/questions';
 import { getMaxRoundsForPlayers } from '../firebase/multiplayerService';
 import type { GameLengthMode, SinglePhonePlayer } from '../types/game';
 import { soundFX } from '../utils/sound';
+import { AvatarPickerModal } from './AvatarPickerModal';
 import { PlayerAvatar } from './PlayerAvatar';
 
 interface SinglePhoneSetupScreenProps {
@@ -37,6 +38,7 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [avatarEditingPlayerId, setAvatarEditingPlayerId] = useState<string | null>(null);
 
   const maxRounds = getMaxRoundsForPlayers(players.length);
 
@@ -61,7 +63,7 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
         next.push({
           id,
           name: language === 'ar' ? `لاعب ${num}` : `Player ${num}`,
-          avatarColor: pickAvatarPalette(num + id),
+          avatarColor: pickDefaultAvatar(num + id),
         });
       }
       return next;
@@ -86,7 +88,7 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
       {
         id,
         name: clean,
-        avatarColor: pickAvatarPalette(clean + prev.length),
+        avatarColor: pickDefaultAvatar(clean + prev.length),
       },
     ]);
     setNewName('');
@@ -188,7 +190,17 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
                     <span className="w-6 text-xs font-mono-tabular text-[#8B5E3C] font-bold shrink-0">
                       {idx + 1}.
                     </span>
-                    <PlayerAvatar name={p.name} paletteId={p.avatarColor} size="sm" />
+                    <PlayerAvatar
+                      name={p.name}
+                      paletteId={p.avatarColor}
+                      size="sm"
+                      editable
+                      ariaLabel={t.chooseAvatarTitle}
+                      onClick={() => {
+                        soundFX.tap(soundEnabled);
+                        setAvatarEditingPlayerId(p.id);
+                      }}
+                    />
                     {isEditing ? (
                       <input
                         type="text"
@@ -375,6 +387,24 @@ export const SinglePhoneSetupScreen: React.FC<SinglePhoneSetupScreenProps> = ({
           </button>
         </div>
       </div>
+
+      {(() => {
+        const editingTarget = players.find((pl) => pl.id === avatarEditingPlayerId) ?? null;
+        return (
+          <AvatarPickerModal
+            open={Boolean(editingTarget)}
+            playerName={editingTarget?.name ?? ''}
+            initialAvatar={editingTarget?.avatarColor ?? 'fox:espresso'}
+            onClose={() => setAvatarEditingPlayerId(null)}
+            onSave={(nextAvatar) => {
+              if (!editingTarget) return;
+              setPlayers((prev) =>
+                prev.map((pl) => (pl.id === editingTarget.id ? { ...pl, avatarColor: nextAvatar } : pl))
+              );
+            }}
+          />
+        );
+      })()}
     </motion.div>
   );
 };

@@ -26,13 +26,21 @@
         "RECORD_AUDIO",
         "MODIFY_AUDIO_SETTINGS",
         "BLUETOOTH",
-        "BLUETOOTH_CONNECT"
+        "BLUETOOTH_CONNECT",
+        "POST_NOTIFICATIONS"
       ]
     },
     "plugins": [
       "expo-localization",
       "expo-image-picker",
-      "@config-plugins/react-native-webrtc"
+      "@config-plugins/react-native-webrtc",
+      "expo-notifications",
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Allow Men Gheir Kalam to access your microphone for voice chat and voice messages."
+        }
+      ]
     ],
     "extra": {
       "supportsRTL": true

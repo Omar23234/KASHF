@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Audio } from 'expo-av';
 import { PermissionsAndroid, Platform } from 'react-native';
 import {
   deleteVoiceSignal,
@@ -9,10 +10,12 @@ import {
   type VoiceSignalDoc,
 } from '../services/multiplayerService';
 
-export type VoiceErrorType = '' | 'permission_denied' | 'not_supported';
+export type VoiceErrorType = '' | 'permission_denied' | 'not_supported' | 'no_mic_device';
 
 interface RNWebRTCTrack {
   enabled: boolean;
+  onunmute?: (() => void) | null;
+  _setVolume?: (volume: number) => void;
   stop: () => void;
 }
 
@@ -27,14 +30,16 @@ interface RNWebRTCPeer {
   signalingState: string;
   connectionState?: string;
   onicecandidate: ((evt: { candidate?: { toJSON?: () => unknown } | null }) => void) | null;
-  ontrack: ((evt: unknown) => void) | null;
+  ontrack: ((evt: { track?: RNWebRTCTrack; streams?: RNWebRTCStream[] }) => void) | null;
   onconnectionstatechange: (() => void) | null;
   addTrack: (track: RNWebRTCTrack, stream: RNWebRTCStream) => void;
+  addTransceiver?: (kind: string, init?: { direction?: string }) => void;
   createOffer: (options?: unknown) => Promise<unknown>;
   createAnswer: (options?: unknown) => Promise<unknown>;
   setLocalDescription: (desc: unknown) => Promise<void>;
   setRemoteDescription: (desc: unknown) => Promise<void>;
   addIceCandidate: (cand: unknown) => Promise<void>;
+  restartIce?: () => void;
   getStats: () => Promise<Map<string, Record<string, unknown>> | Iterable<[string, Record<string, unknown>]>>;
   close: () => void;
 }
@@ -43,6 +48,8 @@ interface RNWebRTCModule {
   RTCPeerConnection: new (config: { iceServers: Array<{ urls: string }> }) => RNWebRTCPeer;
   RTCSessionDescription: new (desc: unknown) => unknown;
   RTCIceCandidate: new (cand: unknown) => unknown;
+  MediaStream?: new (tracks?: RNWebRTCTrack[]) => RNWebRTCStream;
+  registerGlobals?: () => void;
   mediaDevices: {
     getUserMedia: (constraints: { audio: boolean; video: boolean }) => Promise<RNWebRTCStream>;
   };
@@ -53,14 +60,39 @@ const RTC_CONFIG = {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
   ],
 };
 
 function loadWebRTC(): RNWebRTCModule | null {
+  if (Platform.OS === 'web') {
+    if (
+      typeof window !== 'undefined' &&
+      typeof RTCPeerConnection !== 'undefined' &&
+      typeof navigator !== 'undefined' &&
+      typeof navigator.mediaDevices?.getUserMedia === 'function'
+    ) {
+      return {
+        RTCPeerConnection: RTCPeerConnection as unknown as RNWebRTCModule['RTCPeerConnection'],
+        RTCSessionDescription: RTCSessionDescription as unknown as RNWebRTCModule['RTCSessionDescription'],
+        RTCIceCandidate: RTCIceCandidate as unknown as RNWebRTCModule['RTCIceCandidate'],
+        MediaStream: MediaStream as unknown as RNWebRTCModule['MediaStream'],
+        mediaDevices: navigator.mediaDevices as unknown as RNWebRTCModule['mediaDevices'],
+      };
+    }
+    return null;
+  }
+
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mod = require('react-native-webrtc') as Partial<RNWebRTCModule> | null;
     if (mod && mod.RTCPeerConnection && mod.mediaDevices?.getUserMedia) {
+      try {
+        mod.registerGlobals?.();
+      } catch {
+        // ignore if globals already registered
+      }
       return mod as RNWebRTCModule;
     }
     return null;
@@ -83,16 +115,35 @@ export function useMobileVoiceChat(params: {
 
   const webrtcRef = useRef<RNWebRTCModule | null>(null);
   const localStreamRef = useRef<RNWebRTCStream | null>(null);
+  const remoteStreamsRef = useRef<Map<string, RNWebRTCStream>>(new Map());
+  const webAudioElsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   const peersRef = useRef<Map<string, RNWebRTCPeer>>(new Map());
   const pendingIceRef = useRef<Map<string, unknown[]>>(new Map());
   const handledSignalsRef = useRef<Set<string>>(new Set());
+  const makingOfferRef = useRef<Set<string>>(new Set());
+  const joinTimestampMsRef = useRef<number>(0);
   const voiceJoinedRef = useRef(false);
   const micMutedRef = useRef(false);
 
   voiceJoinedRef.current = voiceJoined;
   micMutedRef.current = micMuted;
 
+  const configureSpeakerVoiceAudioMode = useCallback(async (inCall: boolean) => {
+    try {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: inCall,
+        playsInSilentModeIOS: true,
+        playThroughEarpieceAndroid: false,
+        shouldDuckAndroid: !inCall,
+        staysActiveInBackground: false,
+      });
+    } catch {
+      // Ignore on unsupported web/simulator environments
+    }
+  }, []);
+
   const closePeer = useCallback((peerUid: string) => {
+    makingOfferRef.current.delete(peerUid);
     const pc = peersRef.current.get(peerUid);
     if (pc) {
       try {
@@ -104,6 +155,18 @@ export function useMobileVoiceChat(params: {
         // ignore
       }
       peersRef.current.delete(peerUid);
+    }
+    remoteStreamsRef.current.delete(peerUid);
+    const webAudio = webAudioElsRef.current.get(peerUid);
+    if (webAudio) {
+      try {
+        webAudio.pause();
+        webAudio.srcObject = null;
+        webAudio.remove();
+      } catch {
+        // ignore
+      }
+      webAudioElsRef.current.delete(peerUid);
     }
     pendingIceRef.current.delete(peerUid);
     setSpeakingUids((prev) => {
@@ -117,7 +180,9 @@ export function useMobileVoiceChat(params: {
   const createPeerConnection = useCallback(
     (peerUid: string): RNWebRTCPeer | null => {
       const existing = peersRef.current.get(peerUid);
-      if (existing) return existing;
+      if (existing && existing.connectionState !== 'closed') return existing;
+      if (existing) closePeer(peerUid);
+
       const mod = webrtcRef.current;
       if (!mod) return null;
 
@@ -129,6 +194,12 @@ export function useMobileVoiceChat(params: {
         for (const track of stream.getAudioTracks()) {
           pc.addTrack(track, stream);
         }
+      } else {
+        try {
+          pc.addTransceiver?.('audio', { direction: 'recvonly' });
+        } catch {
+          // ignore
+        }
       }
 
       pc.onicecandidate = (evt) => {
@@ -138,8 +209,67 @@ export function useMobileVoiceChat(params: {
         }
       };
 
+      pc.ontrack = (evt) => {
+        const track = evt.track;
+        let remoteStream = evt.streams?.[0];
+        if (!remoteStream && track && mod.MediaStream) {
+          try {
+            remoteStream = new mod.MediaStream([track]);
+          } catch {
+            // ignore
+          }
+        }
+        if (remoteStream) {
+          remoteStreamsRef.current.set(peerUid, remoteStream);
+        }
+        if (track) {
+          track.enabled = true;
+          try {
+            track._setVolume?.(1.5);
+          } catch {
+            // ignore
+          }
+          track.onunmute = () => {
+            track.enabled = true;
+            try {
+              track._setVolume?.(1.5);
+            } catch {
+              // ignore
+            }
+          };
+        }
+
+        if (Platform.OS === 'web' && remoteStream && typeof document !== 'undefined') {
+          let audio = webAudioElsRef.current.get(peerUid);
+          if (!audio) {
+            audio = document.createElement('audio');
+            audio.autoplay = true;
+            audio.muted = false;
+            audio.volume = 1;
+            audio.setAttribute('playsinline', 'true');
+            audio.style.display = 'none';
+            document.body.appendChild(audio);
+            webAudioElsRef.current.set(peerUid, audio);
+          }
+          audio.srcObject = remoteStream as unknown as MediaStream;
+          audio.play().catch(() => {});
+        }
+      };
+
+      let iceRestartAttempted = false;
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        if (pc.connectionState === 'failed') {
+          if (!iceRestartAttempted && typeof pc.restartIce === 'function') {
+            iceRestartAttempted = true;
+            try {
+              pc.restartIce();
+              return;
+            } catch {
+              // fall through
+            }
+          }
+          closePeer(peerUid);
+        } else if (pc.connectionState === 'closed') {
           closePeer(peerUid);
         }
       };
@@ -147,6 +277,28 @@ export function useMobileVoiceChat(params: {
       return pc;
     },
     [closePeer, roomCode]
+  );
+
+  const sendOfferToPeer = useCallback(
+    async (peerUid: string, pc: RNWebRTCPeer) => {
+      if (!roomCode || makingOfferRef.current.has(peerUid)) return;
+      makingOfferRef.current.add(peerUid);
+      try {
+        const offer = await pc.createOffer({ offerToReceiveAudio: true });
+        await pc.setLocalDescription(offer);
+        if (pc.localDescription) {
+          const payload = pc.localDescription.toJSON
+            ? pc.localDescription.toJSON()
+            : pc.localDescription;
+          await sendVoiceSignal(roomCode, peerUid, 'offer', JSON.stringify(payload));
+        }
+      } catch {
+        // ignore transient offer error; reconciliation loop retries
+      } finally {
+        makingOfferRef.current.delete(peerUid);
+      }
+    },
+    [roomCode]
   );
 
   const leaveVoice = useCallback(async () => {
@@ -165,10 +317,11 @@ export function useMobileVoiceChat(params: {
       }
       localStreamRef.current = null;
     }
+    await configureSpeakerVoiceAudioMode(false);
     if (roomCode) {
       await setPlayerVoiceState(roomCode, false, false);
     }
-  }, [closePeer, roomCode]);
+  }, [closePeer, configureSpeakerVoiceAudioMode, roomCode]);
 
   const joinVoice = useCallback(async () => {
     if (!roomCode || !myUid) return;
@@ -189,6 +342,10 @@ export function useMobileVoiceChat(params: {
       }
     }
 
+    await configureSpeakerVoiceAudioMode(true);
+    joinTimestampMsRef.current = Date.now();
+    handledSignalsRef.current.clear();
+
     try {
       const stream = await mod.mediaDevices.getUserMedia({ audio: true, video: false });
       localStreamRef.current = stream;
@@ -200,10 +357,29 @@ export function useMobileVoiceChat(params: {
       voiceJoinedRef.current = true;
       micMutedRef.current = false;
       await setPlayerVoiceState(roomCode, true, false);
-    } catch {
-      setVoiceError('not_supported');
+    } catch (err: unknown) {
+      await configureSpeakerVoiceAudioMode(false);
+      const errName = (err as { name?: string })?.name ?? '';
+      const errMsg = err instanceof Error ? err.message.toLowerCase() : '';
+      if (
+        errName === 'NotAllowedError' ||
+        errName === 'PermissionDeniedError' ||
+        errMsg.includes('permission') ||
+        errMsg.includes('denied')
+      ) {
+        setVoiceError('permission_denied');
+      } else if (
+        errName === 'NotFoundError' ||
+        errName === 'DevicesNotFoundError' ||
+        errMsg.includes('not found') ||
+        errMsg.includes('no audio')
+      ) {
+        setVoiceError('no_mic_device');
+      } else {
+        setVoiceError('not_supported');
+      }
     }
-  }, [myUid, roomCode]);
+  }, [configureSpeakerVoiceAudioMode, myUid, roomCode]);
 
   const toggleMute = useCallback(async () => {
     if (!voiceJoinedRef.current || !roomCode) return;
@@ -218,40 +394,35 @@ export function useMobileVoiceChat(params: {
     await setPlayerVoiceState(roomCode, true, nextMuted);
   }, [roomCode]);
 
+  // Mesh maintenance + 3-second recovery check
   useEffect(() => {
     if (!voiceJoined || !roomCode || !myUid) return;
 
-    const activePeers = new Set(
-      playerOrder.filter((pid) => pid !== myUid && players[pid]?.voiceJoined)
-    );
+    const reconcileMesh = () => {
+      const activePeers = new Set(
+        playerOrder.filter((pid) => pid !== myUid && players[pid]?.voiceJoined)
+      );
 
-    for (const existingPeer of Array.from(peersRef.current.keys())) {
-      if (!activePeers.has(existingPeer)) {
-        closePeer(existingPeer);
+      for (const existingPeer of Array.from(peersRef.current.keys())) {
+        if (!activePeers.has(existingPeer)) {
+          closePeer(existingPeer);
+        }
       }
-    }
 
-    for (const peerUid of activePeers) {
-      if (!peersRef.current.has(peerUid) && myUid < peerUid) {
-        const pc = createPeerConnection(peerUid);
-        if (!pc) continue;
-        void (async () => {
-          try {
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            if (pc.localDescription) {
-              const payload = pc.localDescription.toJSON
-                ? pc.localDescription.toJSON()
-                : pc.localDescription;
-              await sendVoiceSignal(roomCode, peerUid, 'offer', JSON.stringify(payload));
-            }
-          } catch {
-            // ignore transient offer error
+      for (const peerUid of activePeers) {
+        if (!peersRef.current.has(peerUid) && myUid < peerUid) {
+          const pc = createPeerConnection(peerUid);
+          if (pc) {
+            void sendOfferToPeer(peerUid, pc);
           }
-        })();
+        }
       }
-    }
-  }, [closePeer, createPeerConnection, myUid, playerOrder, players, roomCode, voiceJoined]);
+    };
+
+    reconcileMesh();
+    const timer = setInterval(reconcileMesh, 3000);
+    return () => clearInterval(timer);
+  }, [closePeer, createPeerConnection, myUid, playerOrder, players, roomCode, sendOfferToPeer, voiceJoined]);
 
   useEffect(() => {
     if (!voiceJoined || !roomCode || !myUid) return;
@@ -263,13 +434,32 @@ export function useMobileVoiceChat(params: {
       for (const sig of signals) {
         if (handledSignalsRef.current.has(sig.id)) continue;
         handledSignalsRef.current.add(sig.id);
+
+        const sigMs = sig.createdAt?.toMillis?.();
+        if (sigMs && joinTimestampMsRef.current && sigMs < joinTimestampMsRef.current - 12000) {
+          void deleteVoiceSignal(roomCode, sig.id);
+          continue;
+        }
+
         const peerUid = sig.fromUid;
+        const polite = myUid > peerUid;
 
         try {
           if (sig.type === 'offer') {
             const pc = createPeerConnection(peerUid);
             if (!pc) continue;
             const desc = JSON.parse(sig.payload);
+            const offerCollision = makingOfferRef.current.has(peerUid) || pc.signalingState !== 'stable';
+            if (offerCollision && !polite) {
+              continue;
+            }
+            if (offerCollision && polite) {
+              try {
+                await pc.setLocalDescription({ type: 'rollback' });
+              } catch {
+                // fallback if rollback is unsupported by native wrapper
+              }
+            }
             await pc.setRemoteDescription(new mod.RTCSessionDescription(desc));
             const queued = pendingIceRef.current.get(peerUid) ?? [];
             for (const cand of queued) {
@@ -334,10 +524,10 @@ export function useMobileVoiceChat(params: {
             const entries = Array.from(stats as Iterable<[string, Record<string, unknown>]>);
             for (const [, report] of entries) {
               const level = typeof report.audioLevel === 'number' ? report.audioLevel : 0;
-              if (report.type === 'inbound-rtp' && report.kind === 'audio' && level > 0.02) {
+              if (report.type === 'inbound-rtp' && report.kind === 'audio' && level > 0.008) {
                 if (!players[peerUid]?.micMuted) next[peerUid] = true;
               }
-              if (report.type === 'media-source' && report.kind === 'audio' && level > 0.02) {
+              if (report.type === 'media-source' && report.kind === 'audio' && level > 0.008) {
                 if (!micMutedRef.current) anyLocalSpeaking = true;
               }
             }
@@ -364,8 +554,9 @@ export function useMobileVoiceChat(params: {
         for (const track of localStreamRef.current.getTracks()) track.stop();
         localStreamRef.current = null;
       }
+      void configureSpeakerVoiceAudioMode(false);
     };
-  }, [closePeer]);
+  }, [closePeer, configureSpeakerVoiceAudioMode]);
 
   return {
     voiceJoined,

@@ -18,7 +18,7 @@ import {
   writeBatch,
   type Unsubscribe,
 } from 'firebase/firestore';
-import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
+import { pickDefaultAvatar } from '../config/avatars';
 import { drawRandomUnusedQuestionId, shuffleArray, TOTAL_QUESTIONS_COUNT } from '../data/questions';
 import {
   auth,
@@ -26,7 +26,6 @@ import {
   handleFirestoreError,
   isFirebaseConfigured,
   OperationType,
-  storage,
   testConnection,
 } from '../firebase/config';
 import type { Language } from '../i18n/translations';
@@ -95,6 +94,16 @@ export interface RoomPlayerDoc {
   lastSeenAt: Timestamp;
 }
 
+export const REACTION_EMOJIS = ['❤️', '😂', '😮', '😢', '👍', '👎'] as const;
+export type ReactionEmoji = (typeof REACTION_EMOJIS)[number];
+
+export interface ChatReplyReference {
+  replyToMessageId: string;
+  replyToSenderName: string;
+  replyToPreviewText: string;
+  replyToType: 'text' | 'voice';
+}
+
 export interface RoomChatMessage {
   id: string;
   senderId: string;
@@ -102,26 +111,26 @@ export interface RoomChatMessage {
   text: string;
   memberIds: string[];
   createdAt: Timestamp | null;
-  messageType?: 'text' | 'sticker';
-  stickerId?: string;
-  stickerUrl?: string;
-  stickerStoragePath?: string;
-  stickerCreatorId?: string;
-  stickerCreatorName?: string;
-  stickerContentHash?: string;
+  messageType?: 'text' | 'voice';
+  audioUrl?: string;
+  audioStoragePath?: string;
+  audioDurationSec?: number;
+  audioMimeType?: string;
+  replyToMessageId?: string;
+  replyToSenderName?: string;
+  replyToPreviewText?: string;
+  replyToType?: 'text' | 'voice';
 }
 
-export interface PersonalSticker {
-  stickerId: string;
-  ownerId: string;
-  creatorUid: string;
-  creatorName: string;
-  imageUrl: string;
-  storagePath: string;
-  contentHash: string;
-  isSavedFromOther: boolean;
-  createdAt?: Timestamp | null;
-  createdAtMs?: number;
+export interface MessageReactionDoc {
+  id: string;
+  reactionId: string;
+  messageId: string;
+  userId: string;
+  userName: string;
+  emoji: ReactionEmoji;
+  memberIds: string[];
+  updatedAt?: Timestamp | null;
 }
 
 export interface VoiceSignalDoc {
@@ -133,17 +142,25 @@ export interface VoiceSignalDoc {
   createdAt: Timestamp | null;
 }
 
+export type ChatPresenceStatus = 'idle' | 'typing' | 'recording';
+
+export interface RoomChatPresenceDoc {
+  id: string;
+  uid: string;
+  name: string;
+  status: ChatPresenceStatus;
+  memberIds: string[];
+  expiresAtMs: number;
+  updatedAt: Timestamp | null;
+}
+
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const ACTIVE_ROOM_KEY = 'kashf_active_room_code';
 const PLAYER_NAME_KEY = 'kashf_player_name';
-const PALETTE_IDS = ['electric', 'violet', 'cobalt', 'magenta', 'cyan', 'emerald', 'amber', 'rose'];
+const PLAYER_AVATAR_KEY = 'kashf_player_avatar';
 
 export function pickAvatarPalette(seed: string): string {
-  let hash = 0;
-  for (let i = 0; i < seed.length; i++) {
-    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
-  }
-  return PALETTE_IDS[hash % PALETTE_IDS.length];
+  return pickDefaultAvatar(seed);
 }
 
 export function getMaxRoundsForPlayers(playerCount: number): number {
@@ -152,6 +169,14 @@ export function getMaxRoundsForPlayers(playerCount: number): number {
 
 export async function getSavedPlayerName(): Promise<string> {
   return (await AsyncStorage.getItem(PLAYER_NAME_KEY)) || '';
+}
+
+export async function getSavedPlayerAvatar(): Promise<string> {
+  return (await AsyncStorage.getItem(PLAYER_AVATAR_KEY)) || '';
+}
+
+export async function savePlayerAvatar(avatar: string): Promise<void> {
+  await AsyncStorage.setItem(PLAYER_AVATAR_KEY, avatar.slice(0, 24));
 }
 
 export async function saveActiveRoom(roomCode: string | null): Promise<void> {
@@ -218,6 +243,7 @@ async function generateUniqueRoomCode(): Promise<string> {
 
 export async function createMultiplayerRoom(params: {
   hostName: string;
+  avatarColor?: string;
   language: Language;
   gameMode: GameLengthMode;
   roundsCount: number;
@@ -229,7 +255,15 @@ export async function createMultiplayerRoom(params: {
   if (!user) throw new Error('AUTH_REQUIRED');
   const cleanName = params.hostName.trim().slice(0, 24);
   if (!cleanName) throw new Error('INVALID_NAME');
+  const chosenAvatar = (
+    params.avatarColor ||
+    (await getSavedPlayerAvatar()) ||
+    pickDefaultAvatar(user.uid)
+  )
+    .trim()
+    .slice(0, 24);
   await AsyncStorage.setItem(PLAYER_NAME_KEY, cleanName);
+  await savePlayerAvatar(chosenAvatar);
 
   const roomCode = await generateUniqueRoomCode();
   const roomRef = doc(firestore, 'rooms', roomCode);
@@ -273,7 +307,7 @@ export async function createMultiplayerRoom(params: {
   batch.set(playerRef, {
     uid: user.uid,
     name: cleanName,
-    avatarColor: pickAvatarPalette(user.uid),
+    avatarColor: chosenAvatar,
     isHost: true,
     score: 0,
     skipsRemaining: 3,
@@ -302,6 +336,7 @@ export async function createMultiplayerRoom(params: {
 export async function joinMultiplayerRoom(params: {
   rawCode: string;
   playerName: string;
+  avatarColor?: string;
 }): Promise<{ roomCode: string; reconnected: boolean }> {
   const { auth: firebaseAuth, db: firestore } = requireFirebase();
   const user = firebaseAuth.currentUser;
@@ -310,7 +345,15 @@ export async function joinMultiplayerRoom(params: {
   if (!/^[A-Z0-9]{6}$/.test(roomCode)) throw new Error('INVALID_CODE');
   const cleanName = params.playerName.trim().slice(0, 24);
   if (!cleanName) throw new Error('INVALID_NAME');
+  const chosenAvatar = (
+    params.avatarColor ||
+    (await getSavedPlayerAvatar()) ||
+    pickDefaultAvatar(user.uid)
+  )
+    .trim()
+    .slice(0, 24);
   await AsyncStorage.setItem(PLAYER_NAME_KEY, cleanName);
+  await savePlayerAvatar(chosenAvatar);
 
   const roomRef = doc(firestore, 'rooms', roomCode);
   const playerRef = doc(firestore, 'rooms', roomCode, 'players', user.uid);
@@ -345,7 +388,7 @@ export async function joinMultiplayerRoom(params: {
       tx.set(playerRef, {
         uid: user.uid,
         name: cleanName,
-        avatarColor: pickAvatarPalette(user.uid),
+        avatarColor: chosenAvatar,
         isHost: false,
         score: 0,
         skipsRemaining: 3,
@@ -387,6 +430,23 @@ export async function updateLobbySettings(
     await updateDoc(doc(firestore, 'rooms', roomCode), { ...settings, updatedAt: serverTimestamp() });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomCode}`);
+  }
+}
+
+export async function updateMyLobbyAvatar(roomCode: string, avatarColor: string): Promise<void> {
+  const { auth: firebaseAuth, db: firestore } = requireFirebase();
+  const user = firebaseAuth.currentUser;
+  if (!user) throw new Error('AUTH_REQUIRED');
+  const cleanAvatar = avatarColor.trim().slice(0, 24);
+  if (!cleanAvatar) return;
+  await savePlayerAvatar(cleanAvatar);
+  try {
+    await updateDoc(doc(firestore, 'rooms', roomCode, 'players', user.uid), {
+      avatarColor: cleanAvatar,
+      lastSeenAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomCode}/players/${user.uid}`);
   }
 }
 
@@ -962,6 +1022,14 @@ export async function useGoldCard(roomCode: string): Promise<void> {
       });
     });
   } catch (error) {
+    if (
+      error instanceof Error &&
+      ['ROOM_NOT_FOUND', 'PLAYER_NOT_FOUND', 'NOT_YOUR_TURN', 'CANNOT_REFUSE_FORCED_TURN', 'NO_GOLD_CARD'].includes(
+        error.message
+      )
+    ) {
+      throw error;
+    }
     handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomCode}`);
   }
 }
@@ -969,7 +1037,8 @@ export async function useGoldCard(roomCode: string): Promise<void> {
 export async function useSwitchCard(roomCode: string, targetUid: string): Promise<void> {
   const { auth: firebaseAuth, db: firestore } = requireFirebase();
   const user = firebaseAuth.currentUser;
-  if (!user || targetUid === user.uid) return;
+  if (!user) throw new Error('AUTH_REQUIRED');
+  if (targetUid === user.uid) return;
   const roomRef = doc(firestore, 'rooms', roomCode);
   const playerRef = doc(firestore, 'rooms', roomCode, 'players', user.uid);
   const targetRef = doc(firestore, 'rooms', roomCode, 'players', targetUid);
@@ -981,12 +1050,15 @@ export async function useSwitchCard(roomCode: string, targetUid: string): Promis
         tx.get(playerRef),
         tx.get(targetRef),
       ]);
-      if (!roomSnap.exists() || !playerSnap.exists() || !targetSnap.exists()) return;
+      if (!roomSnap.exists()) throw new Error('ROOM_NOT_FOUND');
+      if (!playerSnap.exists() || !targetSnap.exists()) throw new Error('PLAYER_NOT_FOUND');
       const room = roomSnap.data() as RoomDoc;
       const player = playerSnap.data() as RoomPlayerDoc;
       const target = targetSnap.data() as RoomPlayerDoc;
-      if (room.status !== 'playing' || room.turnMode !== 'normal' || room.activePlayerId !== user.uid) return;
-      if ((player.switchCards ?? 0) < 1) return;
+      if (room.status !== 'playing') return;
+      if (room.turnMode !== 'normal') throw new Error('CANNOT_REFUSE_FORCED_TURN');
+      if (room.activePlayerId !== user.uid) throw new Error('NOT_YOUR_TURN');
+      if ((player.switchCards ?? 0) < 1) throw new Error('NO_SWITCH_CARD');
 
       const nextNonce = room.turnNonce + 1;
       tx.update(playerRef, { switchCards: player.switchCards - 1, lastSeenAt: serverTimestamp() });
@@ -1009,6 +1081,14 @@ export async function useSwitchCard(roomCode: string, targetUid: string): Promis
       });
     });
   } catch (error) {
+    if (
+      error instanceof Error &&
+      ['ROOM_NOT_FOUND', 'PLAYER_NOT_FOUND', 'NOT_YOUR_TURN', 'CANNOT_REFUSE_FORCED_TURN', 'NO_SWITCH_CARD'].includes(
+        error.message
+      )
+    ) {
+      throw error;
+    }
     handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomCode}`);
   }
 }
@@ -1016,23 +1096,24 @@ export async function useSwitchCard(roomCode: string, targetUid: string): Promis
 export async function useAntiSwitchCard(roomCode: string): Promise<void> {
   const { auth: firebaseAuth, db: firestore } = requireFirebase();
   const user = firebaseAuth.currentUser;
-  if (!user) return;
+  if (!user) throw new Error('AUTH_REQUIRED');
   const roomRef = doc(firestore, 'rooms', roomCode);
   const myRef = doc(firestore, 'rooms', roomCode, 'players', user.uid);
 
   try {
     await runTransaction(firestore, async (tx) => {
       const roomSnap = await tx.get(roomRef);
-      if (!roomSnap.exists()) return;
+      if (!roomSnap.exists()) throw new Error('ROOM_NOT_FOUND');
       const room = roomSnap.data() as RoomDoc;
-      if (room.status !== 'playing' || room.turnMode !== 'switch_pending' || room.switchTargetId !== user.uid || !room.switchSourceId) {
-        return;
+      if (room.status !== 'playing' || room.turnMode !== 'switch_pending' || !room.switchSourceId) {
+        throw new Error('NO_ACTIVE_SWITCH');
       }
+      if (room.switchTargetId !== user.uid) throw new Error('NOT_SWITCH_TARGET');
       const sourceRef = doc(firestore, 'rooms', roomCode, 'players', room.switchSourceId);
       const [mySnap, sourceSnap] = await Promise.all([tx.get(myRef), tx.get(sourceRef)]);
-      if (!mySnap.exists()) return;
+      if (!mySnap.exists()) throw new Error('PLAYER_NOT_FOUND');
       const myPlayer = mySnap.data() as RoomPlayerDoc;
-      if ((myPlayer.antiSwitchCards ?? 0) < 1) return;
+      if ((myPlayer.antiSwitchCards ?? 0) < 1) throw new Error('NO_ANTI_SWITCH_CARD');
       const sourceName = sourceSnap.exists() ? (sourceSnap.data() as RoomPlayerDoc).name : '';
 
       const nextNonce = room.turnNonce + 1;
@@ -1055,6 +1136,14 @@ export async function useAntiSwitchCard(roomCode: string): Promise<void> {
       });
     });
   } catch (error) {
+    if (
+      error instanceof Error &&
+      ['ROOM_NOT_FOUND', 'PLAYER_NOT_FOUND', 'NO_ACTIVE_SWITCH', 'NOT_SWITCH_TARGET', 'NO_ANTI_SWITCH_CARD'].includes(
+        error.message
+      )
+    ) {
+      throw error;
+    }
     handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomCode}`);
   }
 }
@@ -1181,25 +1270,39 @@ export async function setPlayerVoiceState(
   }
 }
 
+function buildReplyPayload(replyTo?: ChatReplyReference | null): Partial<ChatReplyReference> {
+  if (!replyTo) return {};
+  const preview = replyTo.replyToPreviewText.trim().slice(0, 160) || '...';
+  const sender = replyTo.replyToSenderName.trim().slice(0, 24) || 'Player';
+  return {
+    replyToMessageId: replyTo.replyToMessageId,
+    replyToSenderName: sender,
+    replyToPreviewText: preview,
+    replyToType: replyTo.replyToType,
+  };
+}
+
 export async function sendRoomChatMessage(
   roomCode: string,
   senderName: string,
   text: string,
-  memberIds: string[]
+  memberIds: string[],
+  replyTo?: ChatReplyReference | null
 ): Promise<void> {
-  if (!isFirebaseConfigured || !auth || !db) return;
-  const user = auth.currentUser;
-  if (!user) return;
+  const { auth: firebaseAuth, db: firestore } = requireFirebase();
+  const user = firebaseAuth.currentUser;
+  if (!user) throw new Error('AUTH_REQUIRED');
   const cleanText = text.trim().slice(0, 500);
   if (!cleanText) return;
   const cleanName = (senderName || 'Player').trim().slice(0, 24) || 'Player';
   const safeMembers = Array.from(new Set([user.uid, ...memberIds])).slice(0, 12);
   try {
-    await addDoc(collection(db, 'rooms', roomCode, 'messages'), {
+    await addDoc(collection(firestore, 'rooms', roomCode, 'messages'), {
       senderId: user.uid,
       senderName: cleanName,
       text: cleanText,
       memberIds: safeMembers,
+      ...buildReplyPayload(replyTo),
       createdAt: serverTimestamp(),
     });
   } catch (error) {
@@ -1210,7 +1313,8 @@ export async function sendRoomChatMessage(
 export function subscribeToRoomMessages(
   roomCode: string,
   myUid: string,
-  onMessages: (messages: RoomChatMessage[]) => void
+  onMessages: (messages: RoomChatMessage[]) => void,
+  onError?: (err: Error) => void
 ): Unsubscribe {
   if (!isFirebaseConfigured || !db || !myUid) return () => {};
   const q = query(
@@ -1231,210 +1335,245 @@ export function subscribeToRoomMessages(
       );
       onMessages(list.slice(-100));
     },
-    () => {}
+    (err) => {
+      if (onError) onError(err);
+    }
   );
 }
 
-export async function sendRoomStickerMessage(
-  roomCode: string,
-  senderName: string,
-  sticker: PersonalSticker,
-  memberIds: string[]
-): Promise<void> {
-  if (!isFirebaseConfigured || !auth || !db) return;
-  const user = auth.currentUser;
-  if (!user) return;
-  if (!sticker.imageUrl.startsWith('https://')) {
-    throw new Error('INVALID_STICKER_URL');
+const MAX_INLINE_VOICE_BYTES = 480 * 1024;
+const MAX_INLINE_VOICE_DATA_URI_CHARS = 700000;
+const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+function encodeBytesToBase64(bytes: Uint8Array): string {
+  let out = '';
+  const len = bytes.length;
+  for (let i = 0; i < len; i += 3) {
+    const b1 = bytes[i];
+    const hasB2 = i + 1 < len;
+    const hasB3 = i + 2 < len;
+    const b2 = hasB2 ? bytes[i + 1] : 0;
+    const b3 = hasB3 ? bytes[i + 2] : 0;
+
+    out += BASE64_CHARS[b1 >> 2];
+    out += BASE64_CHARS[((b1 & 0x03) << 4) | (b2 >> 4)];
+    out += hasB2 ? BASE64_CHARS[((b2 & 0x0f) << 2) | (b3 >> 6)] : '=';
+    out += hasB3 ? BASE64_CHARS[b3 & 0x3f] : '=';
   }
-  const cleanName = (senderName || 'Player').trim().slice(0, 24) || 'Player';
-  const cleanCreatorName = (sticker.creatorName || cleanName).trim().slice(0, 24) || 'Player';
-  const safeMembers = Array.from(new Set([user.uid, ...memberIds])).slice(0, 12);
+  return out;
+}
+
+function readLocalAudioBytes(uri: string): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', uri, true);
+      xhr.responseType = 'arraybuffer';
+      xhr.onload = () => {
+        if ((xhr.status === 200 || xhr.status === 0) && xhr.response) {
+          resolve(new Uint8Array(xhr.response as ArrayBuffer));
+        } else {
+          reject(new Error(`XHR_STATUS_${xhr.status}`));
+        }
+      };
+      xhr.onerror = () => {
+        fetch(uri)
+          .then((r) => r.arrayBuffer())
+          .then((buf) => resolve(new Uint8Array(buf)))
+          .catch(reject);
+      };
+      xhr.send();
+    } catch {
+      fetch(uri)
+        .then((r) => r.arrayBuffer())
+        .then((buf) => resolve(new Uint8Array(buf)))
+        .catch(reject);
+    }
+  });
+}
+
+export async function uploadAndSendVoiceMessage(params: {
+  roomCode: string;
+  senderName: string;
+  uri: string;
+  mimeType: string;
+  durationSec: number;
+  memberIds: string[];
+  replyTo?: ChatReplyReference | null;
+}): Promise<void> {
+  const { auth: firebaseAuth, db: firestore } = requireFirebase();
+  const user = firebaseAuth.currentUser;
+  if (!user) throw new Error('AUTH_REQUIRED');
+
+  const rawMime = (params.mimeType || 'audio/mp4').split(';')[0].trim().toLowerCase();
+  const safeMime = rawMime.startsWith('audio/') ? rawMime : 'audio/mp4';
+
+  let bytes: Uint8Array;
   try {
-    await addDoc(collection(db, 'rooms', roomCode, 'messages'), {
+    bytes = await readLocalAudioBytes(params.uri);
+  } catch {
+    throw new Error('VOICE_UPLOAD_FAILED');
+  }
+
+  if (bytes.byteLength < 64) {
+    throw new Error('VOICE_UPLOAD_FAILED');
+  }
+  if (bytes.byteLength > MAX_INLINE_VOICE_BYTES) {
+    throw new Error('VOICE_TOO_LARGE');
+  }
+
+  const base64Body = encodeBytesToBase64(bytes);
+  const audioDataUrl = `data:${safeMime};base64,${base64Body}`;
+  if (audioDataUrl.length < 30 || audioDataUrl.length > MAX_INLINE_VOICE_DATA_URI_CHARS) {
+    throw new Error('VOICE_TOO_LARGE');
+  }
+
+  const safeDuration = Math.min(180, Math.max(1, Math.round(params.durationSec)));
+  const cleanName = (params.senderName || 'Player').trim().slice(0, 24) || 'Player';
+  const safeMembers = Array.from(new Set([user.uid, ...params.memberIds])).slice(0, 12);
+
+  try {
+    await addDoc(collection(firestore, 'rooms', params.roomCode, 'messages'), {
       senderId: user.uid,
       senderName: cleanName,
-      text: '[Sticker]',
+      text: `[Voice ${safeDuration}s]`,
       memberIds: safeMembers,
-      messageType: 'sticker',
-      stickerId: sticker.stickerId,
-      stickerUrl: sticker.imageUrl,
-      stickerStoragePath: sticker.storagePath,
-      stickerCreatorId: sticker.creatorUid,
-      stickerCreatorName: cleanCreatorName,
-      stickerContentHash: sticker.contentHash,
+      messageType: 'voice',
+      audioUrl: audioDataUrl,
+      audioStoragePath: 'inline',
+      audioDurationSec: safeDuration,
+      audioMimeType: safeMime,
+      ...buildReplyPayload(params.replyTo),
       createdAt: serverTimestamp(),
     });
   } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, `rooms/${roomCode}/messages`);
+    handleFirestoreError(error, OperationType.CREATE, `rooms/${params.roomCode}/messages`);
   }
 }
 
-export function subscribeToMyStickers(
-  myUid: string,
-  onStickers: (stickers: PersonalSticker[]) => void
-): Unsubscribe {
-  if (!isFirebaseConfigured || !db || !myUid) {
-    onStickers([]);
-    return () => {};
+export async function toggleMessageReaction(params: {
+  roomCode: string;
+  messageId: string;
+  userName: string;
+  emoji: ReactionEmoji;
+  memberIds: string[];
+  currentMyEmoji?: ReactionEmoji | null;
+}): Promise<void> {
+  const { auth: firebaseAuth, db: firestore } = requireFirebase();
+  const user = firebaseAuth.currentUser;
+  if (!user) throw new Error('AUTH_REQUIRED');
+
+  const reactionId = `${params.messageId}_${user.uid}`;
+  const ref = doc(firestore, 'rooms', params.roomCode, 'messageReactions', reactionId);
+
+  try {
+    if (params.currentMyEmoji === params.emoji) {
+      await deleteDoc(ref);
+      return;
+    }
+
+    const cleanName = (params.userName || 'Player').trim().slice(0, 24) || 'Player';
+    const safeMembers = Array.from(new Set([user.uid, ...params.memberIds])).slice(0, 12);
+
+    await setDoc(ref, {
+      reactionId,
+      messageId: params.messageId,
+      userId: user.uid,
+      userName: cleanName,
+      emoji: params.emoji,
+      memberIds: safeMembers,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(
+      error,
+      OperationType.WRITE,
+      `rooms/${params.roomCode}/messageReactions/${reactionId}`
+    );
   }
+}
+
+export function subscribeToRoomReactions(
+  roomCode: string,
+  myUid: string,
+  onReactions: (reactions: MessageReactionDoc[]) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  if (!isFirebaseConfigured || !db || !myUid) return () => {};
   const q = query(
-    collection(db, 'playerStickers', myUid, 'items'),
-    where('ownerId', '==', myUid)
+    collection(db, 'rooms', roomCode, 'messageReactions'),
+    where('memberIds', 'array-contains', myUid)
   );
   return onSnapshot(
     q,
     (snap) => {
-      const list: PersonalSticker[] = snap.docs.map((d) => d.data() as PersonalSticker);
-      list.sort(
-        (a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0)
-      );
-      onStickers(list);
+      const list: MessageReactionDoc[] = snap.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as Omit<MessageReactionDoc, 'id'>),
+      }));
+      onReactions(list);
     },
-    () => {}
+    (err) => {
+      if (onError) onError(err);
+    }
   );
 }
 
-export async function uploadPersonalSticker(params: {
-  uri: string;
-  mimeType: string;
-  extension: 'png' | 'webp' | 'jpg';
-  contentHash: string;
-  creatorName: string;
-}): Promise<{ status: 'added' | 'already_exists'; sticker: PersonalSticker }> {
-  const { auth: firebaseAuth, db: firestore } = requireFirebase();
-  const user = firebaseAuth.currentUser;
-  if (!user || !storage) throw new Error('AUTH_REQUIRED');
-
-  const itemsCol = collection(firestore, 'playerStickers', user.uid, 'items');
-  try {
-    const dupSnap = await getDocs(
-      query(itemsCol, where('ownerId', '==', user.uid), where('contentHash', '==', params.contentHash))
-    );
-    if (!dupSnap.empty) {
-      return {
-        status: 'already_exists',
-        sticker: dupSnap.docs[0].data() as PersonalSticker,
-      };
-    }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, `playerStickers/${user.uid}/items`);
-  }
-
-  const stickerId = `stk_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const path = `stickers/${user.uid}/${stickerId}.${params.extension}`;
-  const fileRef = storageRef(storage, path);
-
-  let downloadUrl = '';
-  try {
-    const resp = await fetch(params.uri);
-    const blob = await resp.blob();
-    await uploadBytes(fileRef, blob, {
-      contentType: params.mimeType,
-      cacheControl: 'public,max-age=31536000',
-    });
-    downloadUrl = await getDownloadURL(fileRef);
-  } catch (err: unknown) {
-    const code = (err as { code?: string })?.code ?? '';
-    const msg = err instanceof Error ? err.message : String(err);
-    if (
-      code === 'storage/bucket-not-found' ||
-      code === 'storage/project-not-found' ||
-      code === 'storage/unauthorized' ||
-      code === 'storage/unknown' ||
-      msg.includes('404') ||
-      msg.includes('Not Found')
-    ) {
-      throw new Error('STICKER_STORAGE_UNAVAILABLE');
-    }
-    throw new Error('STICKER_UPLOAD_FAILED');
-  }
-
-  const cleanCreatorName = (params.creatorName || 'Player').trim().slice(0, 24) || 'Player';
-  const record: PersonalSticker = {
-    stickerId,
-    ownerId: user.uid,
-    creatorUid: user.uid,
-    creatorName: cleanCreatorName,
-    imageUrl: downloadUrl,
-    storagePath: path,
-    contentHash: params.contentHash,
-    isSavedFromOther: false,
-    createdAt: null,
-  };
-
-  try {
-    await setDoc(doc(firestore, 'playerStickers', user.uid, 'items', stickerId), {
-      ...record,
-      createdAt: serverTimestamp(),
-    });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, `playerStickers/${user.uid}/items/${stickerId}`);
-  }
-
-  return { status: 'added', sticker: record };
-}
-
-export async function saveStickerToMyCollection(params: {
-  stickerId: string;
-  imageUrl: string;
-  storagePath: string;
-  contentHash: string;
-  creatorUid: string;
-  creatorName: string;
-}): Promise<'saved' | 'already_exists'> {
-  const { auth: firebaseAuth, db: firestore } = requireFirebase();
-  const user = firebaseAuth.currentUser;
-  if (!user) throw new Error('AUTH_REQUIRED');
-  if (!params.imageUrl.startsWith('https://')) {
-    throw new Error('INVALID_STICKER_URL');
-  }
-
-  const targetRef = doc(firestore, 'playerStickers', user.uid, 'items', params.stickerId);
-  try {
-    const existingIdSnap = await getDoc(targetRef);
-    if (existingIdSnap.exists()) {
-      return 'already_exists';
-    }
-    const dupHashSnap = await getDocs(
-      query(
-        collection(firestore, 'playerStickers', user.uid, 'items'),
-        where('ownerId', '==', user.uid),
-        where('contentHash', '==', params.contentHash)
-      )
-    );
-    if (!dupHashSnap.empty) {
-      return 'already_exists';
-    }
-
-    const cleanCreatorName = (params.creatorName || 'Player').trim().slice(0, 24) || 'Player';
-    await setDoc(targetRef, {
-      stickerId: params.stickerId,
-      ownerId: user.uid,
-      creatorUid: params.creatorUid,
-      creatorName: cleanCreatorName,
-      imageUrl: params.imageUrl,
-      storagePath: params.storagePath,
-      contentHash: params.contentHash,
-      isSavedFromOther: params.creatorUid !== user.uid,
-      createdAt: serverTimestamp(),
-    });
-    return 'saved';
-  } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, `playerStickers/${user.uid}/items/${params.stickerId}`);
-  }
-}
-
-export async function deletePersonalSticker(stickerId: string): Promise<void> {
-  if (!isFirebaseConfigured || !auth || !db) return;
+export async function setRoomChatPresence(params: {
+  roomCode: string;
+  senderName: string;
+  status: ChatPresenceStatus;
+  memberIds: string[];
+}): Promise<void> {
+  if (!isFirebaseConfigured || !auth || !db || !params.roomCode) return;
   const user = auth.currentUser;
   if (!user) return;
+
+  const cleanName = (params.senderName || 'Player').trim().slice(0, 24) || 'Player';
+  const safeMembers = Array.from(new Set([user.uid, ...params.memberIds])).slice(0, 12);
+  const ref = doc(db, 'rooms', params.roomCode, 'chatPresence', user.uid);
+
   try {
-    await deleteDoc(doc(db, 'playerStickers', user.uid, 'items', stickerId));
+    await setDoc(ref, {
+      uid: user.uid,
+      name: cleanName,
+      status: params.status,
+      memberIds: safeMembers,
+      expiresAtMs: params.status === 'idle' ? 0 : Date.now() + 6500,
+      updatedAt: serverTimestamp(),
+    });
   } catch {
-    // ignore
+    // Ephemeral typing/recording status is best-effort
   }
 }
+
+export function subscribeToRoomChatPresence(
+  roomCode: string,
+  myUid: string,
+  onPresence: (items: RoomChatPresenceDoc[]) => void,
+  onError?: (err: Error) => void
+): Unsubscribe {
+  if (!isFirebaseConfigured || !db || !myUid || !roomCode) return () => {};
+  const q = query(
+    collection(db, 'rooms', roomCode, 'chatPresence'),
+    where('memberIds', 'array-contains', myUid)
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      const list: RoomChatPresenceDoc[] = snap.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as Omit<RoomChatPresenceDoc, 'id'>),
+      }));
+      onPresence(list);
+    },
+    (err) => {
+      if (onError) onError(err);
+    }
+  );
+}
+
+
 
 export async function sendVoiceSignal(
   roomCode: string,

@@ -43,10 +43,10 @@ export function formatMultiplayerError(err: unknown, t: TranslationDict): string
       return t.cannotRefuseHint;
     case 'VOICE_STORAGE_UNAVAILABLE':
       return t.voiceStorageUnavailable;
-    case 'STICKER_STORAGE_UNAVAILABLE':
-      return t.stickerStorageUnavailable;
     case 'VOICE_UPLOAD_FAILED':
       return t.voiceUploadFailed;
+    case 'VOICE_TOO_LARGE':
+      return t.voiceTooLong;
     case 'AUTH_REQUIRED':
       return t.anonAuthRequiredTitle;
     case 'MIN_PLAYERS_REQUIRED':

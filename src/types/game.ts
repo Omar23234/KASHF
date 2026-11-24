@@ -78,7 +78,7 @@ export interface ChatReplyReference {
   replyToMessageId: string;
   replyToSenderName: string;
   replyToPreviewText: string;
-  replyToType: 'text' | 'sticker' | 'voice';
+  replyToType: 'text' | 'voice';
 }
 
 export interface RoomChatMessage {
@@ -88,13 +88,7 @@ export interface RoomChatMessage {
   text: string;
   memberIds: string[];
   createdAt: Timestamp | null;
-  messageType?: 'text' | 'sticker' | 'voice';
-  stickerId?: string;
-  stickerUrl?: string;
-  stickerStoragePath?: string;
-  stickerCreatorId?: string;
-  stickerCreatorName?: string;
-  stickerContentHash?: string;
+  messageType?: 'text' | 'voice';
   audioUrl?: string;
   audioStoragePath?: string;
   audioDurationSec?: number;
@@ -102,7 +96,7 @@ export interface RoomChatMessage {
   replyToMessageId?: string;
   replyToSenderName?: string;
   replyToPreviewText?: string;
-  replyToType?: 'text' | 'sticker' | 'voice';
+  replyToType?: 'text' | 'voice';
 }
 
 export interface MessageReactionDoc {
@@ -116,19 +110,6 @@ export interface MessageReactionDoc {
   updatedAt: Timestamp | null;
 }
 
-export interface PersonalSticker {
-  stickerId: string;
-  ownerId: string;
-  creatorUid: string;
-  creatorName: string;
-  imageUrl: string;
-  storagePath: string;
-  contentHash: string;
-  isSavedFromOther: boolean;
-  createdAt?: Timestamp | null;
-  createdAtMs?: number;
-}
-
 export interface VoiceSignalDoc {
   id: string;
   fromUid: string;
@@ -136,6 +117,18 @@ export interface VoiceSignalDoc {
   type: 'offer' | 'answer' | 'ice';
   payload: string;
   createdAt: Timestamp | null;
+}
+
+export type ChatPresenceStatus = 'idle' | 'typing' | 'recording';
+
+export interface RoomChatPresenceDoc {
+  id: string;
+  uid: string;
+  name: string;
+  status: ChatPresenceStatus;
+  memberIds: string[];
+  expiresAtMs: number;
+  updatedAt: Timestamp | null;
 }
 
 export interface SinglePhonePlayer {

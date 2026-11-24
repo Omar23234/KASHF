@@ -192,7 +192,7 @@
         },
         "avatarColor": {
           "type": "string",
-          "description": "Gradient palette key for the player avatar.",
+          "description": "Encoded character and gradient palette spec (e.g. 'fox:espresso') or palette key for the player avatar.",
           "minLength": 1,
           "maxLength": 24
         },
@@ -277,7 +277,7 @@
     },
     "RoomChatMessage": {
       "title": "RoomChatMessage",
-      "description": "Real-time text, emoji, or sticker chat message scoped to a single multiplayer room.",
+      "description": "Real-time text, emoji, or voice chat message scoped to a single multiplayer room.",
       "type": "object",
       "properties": {
         "senderId": {
@@ -295,68 +295,30 @@
         },
         "text": {
           "type": "string",
-          "description": "Chat message content or sticker caption placeholder.",
+          "description": "Chat message content or voice duration caption.",
           "minLength": 1,
           "maxLength": 500
         },
         "messageType": {
           "type": "string",
-          "description": "Message kind: text (default), sticker, or voice.",
-          "enum": ["text", "sticker", "voice"]
-        },
-        "stickerId": {
-          "type": "string",
-          "description": "Canonical sticker identifier when messageType is sticker.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "stickerUrl": {
-          "type": "string",
-          "description": "HTTPS Firebase Storage download URL of the sticker image.",
-          "minLength": 10,
-          "maxLength": 2048
-        },
-        "stickerStoragePath": {
-          "type": "string",
-          "description": "Firebase Storage object path for the sticker image.",
-          "minLength": 3,
-          "maxLength": 512
-        },
-        "stickerCreatorId": {
-          "type": "string",
-          "description": "Original creator UID of the sticker.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "stickerCreatorName": {
-          "type": "string",
-          "description": "Original creator display name associated with the sticker.",
-          "minLength": 1,
-          "maxLength": 24
-        },
-        "stickerContentHash": {
-          "type": "string",
-          "description": "SHA-256 content hash used for duplicate prevention.",
-          "minLength": 8,
-          "maxLength": 128
+          "description": "Message kind: text (default) or voice.",
+          "enum": ["text", "voice"]
         },
         "audioUrl": {
           "type": "string",
-          "description": "HTTPS Firebase Storage download URL for a recorded voice message.",
+          "description": "HTTPS download URL or bounded base64 audio data URI for a recorded voice message.",
           "minLength": 10,
-          "maxLength": 2048
+          "maxLength": 700000
         },
         "audioStoragePath": {
           "type": "string",
-          "description": "Firebase Storage path for a recorded voice message.",
+          "description": "Storage marker ('inline') or object path for a recorded voice message.",
           "minLength": 3,
           "maxLength": 512
         },
         "audioDurationSec": {
           "type": "integer",
-          "description": "Recorded voice message length in seconds (1 to 300)."
+          "description": "Recorded voice message length in seconds (1 to 180)."
         },
         "audioMimeType": {
           "type": "string",
@@ -386,7 +348,7 @@
         "replyToType": {
           "type": "string",
           "description": "Kind of message being replied to.",
-          "enum": ["text", "sticker", "voice"]
+          "enum": ["text", "voice"]
         },
         "memberIds": {
           "type": "array",
@@ -449,78 +411,7 @@
       },
       "required": ["reactionId", "messageId", "userId", "userName", "emoji", "memberIds", "updatedAt"]
     },
-    "PersonalSticker": {
-      "title": "PersonalSticker",
-      "description": "Personal or saved sticker metadata entry owned by a player (image binary stored in Firebase Storage).",
-      "type": "object",
-      "properties": {
-        "stickerId": {
-          "type": "string",
-          "description": "Canonical sticker ID matching the document ID.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "ownerId": {
-          "type": "string",
-          "description": "Firebase Auth UID of the player who owns/saved this sticker entry.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "creatorUid": {
-          "type": "string",
-          "description": "Original creator Firebase Auth UID.",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[a-zA-Z0-9_\\-]+$"
-        },
-        "creatorName": {
-          "type": "string",
-          "description": "Original creator display name preserved when others save the sticker.",
-          "minLength": 1,
-          "maxLength": 24
-        },
-        "imageUrl": {
-          "type": "string",
-          "description": "HTTPS Firebase Storage download URL of the compressed sticker image.",
-          "minLength": 10,
-          "maxLength": 2048
-        },
-        "storagePath": {
-          "type": "string",
-          "description": "Firebase Storage path of the sticker image.",
-          "minLength": 3,
-          "maxLength": 512
-        },
-        "contentHash": {
-          "type": "string",
-          "description": "Content digest for duplicate detection.",
-          "minLength": 8,
-          "maxLength": 128
-        },
-        "isSavedFromOther": {
-          "type": "boolean",
-          "description": "True when saved from another player's chat message."
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Server timestamp when added to the player's collection."
-        }
-      },
-      "required": [
-        "stickerId",
-        "ownerId",
-        "creatorUid",
-        "creatorName",
-        "imageUrl",
-        "storagePath",
-        "contentHash",
-        "isSavedFromOther",
-        "createdAt"
-      ]
-    },
+
     "VoiceSignal": {
       "title": "VoiceSignal",
       "description": "Ephemeral WebRTC signaling handshake document (SDP offer/answer or ICE candidate) between two room members. No audio is ever stored.",
@@ -558,6 +449,45 @@
         }
       },
       "required": ["fromUid", "toUid", "type", "payload", "createdAt"]
+    },
+    "ChatPresence": {
+      "title": "ChatPresence",
+      "description": "Ephemeral per-user typing or voice-recording indicator inside a multiplayer room chat.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the player typing or recording.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of the player.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "status": {
+          "type": "string",
+          "description": "Current chat composer activity.",
+          "enum": ["idle", "typing", "recording"]
+        },
+        "memberIds": {
+          "type": "array",
+          "description": "Snapshot of room player UIDs permitted to list chat presence without get() calls."
+        },
+        "expiresAtMs": {
+          "type": "integer",
+          "description": "Client-supplied epoch millisecond expiration boundary for stale status filtering."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest status update."
+        }
+      },
+      "required": ["uid", "name", "status", "memberIds", "expiresAtMs", "updatedAt"]
     }
   },
   "firestore": {
@@ -571,13 +501,13 @@
       "schema": {
         "$ref": "#/entities/RoomPlayer"
       },
-      "description": "Per-player membership, score, skip counters, special card inventory, and voice mute state."
+      "description": "Per-player membership, score, skip counters, special card inventory, and voice status."
     },
     "/rooms/{roomId}/messages/{messageId}": {
       "schema": {
         "$ref": "#/entities/RoomChatMessage"
       },
-      "description": "Real-time text, emoji, sticker, and voice chat messages with optional reply metadata scoped strictly to room members."
+      "description": "Real-time text, emoji, and voice chat messages with optional reply metadata scoped strictly to room members."
     },
     "/rooms/{roomId}/messageReactions/{reactionId}": {
       "schema": {
@@ -585,17 +515,17 @@
       },
       "description": "Real-time per-user emoji reactions on room chat messages, isolated per reacting UID."
     },
+    "/rooms/{roomId}/chatPresence/{presenceId}": {
+      "schema": {
+        "$ref": "#/entities/ChatPresence"
+      },
+      "description": "Ephemeral per-player typing and voice recording indicators scoped to room members."
+    },
     "/rooms/{roomId}/voiceSignals/{signalId}": {
       "schema": {
         "$ref": "#/entities/VoiceSignal"
       },
       "description": "Ephemeral WebRTC peer signaling packets for live room voice chat."
-    },
-    "/playerStickers/{playerId}/items/{stickerId}": {
-      "schema": {
-        "$ref": "#/entities/PersonalSticker"
-      },
-      "description": "Personal and saved sticker metadata collections owned strictly by each player UID."
     }
   }
 }

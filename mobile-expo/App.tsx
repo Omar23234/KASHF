@@ -3,9 +3,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as Notifications from 'expo-notifications';
 import { StatusBar } from 'expo-status-bar';
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   Image,
   Modal,
   ScrollView,
@@ -19,7 +22,10 @@ import {
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { onAuthStateChanged, type User } from 'firebase/auth';
+import { AvatarPickerModal } from './src/components/AvatarPickerModal';
 import { MobileChatModal } from './src/components/MobileChatModal';
+import { PlayerAvatar } from './src/components/PlayerAvatar';
+import { pickDefaultAvatar } from './src/config/avatars';
 import {
   getQuestionById,
   TOTAL_QUESTIONS_COUNT,
@@ -34,27 +40,42 @@ import {
   ensureAnonymousAuth,
   getMaxRoundsForPlayers,
   getSavedActiveRoom,
+  getSavedPlayerAvatar,
   getSavedPlayerName,
   joinMultiplayerRoom,
   kickPlayerFromLobby,
   leaveMultiplayerRoom,
   saveActiveRoom,
+  savePlayerAvatar,
   setPlayerConnectionState,
   skipTurnQuestion,
   startOrRestartMultiplayerGame,
-  subscribeToMyStickers,
   subscribeToRoomAndPlayers,
+  subscribeToRoomChatPresence,
   subscribeToRoomMessages,
+  subscribeToRoomReactions,
   updateLobbySettings,
+  updateMyLobbyAvatar,
   useAntiSwitchCard,
   useGoldCard,
   useSwitchCard,
   type GameLengthMode,
-  type PersonalSticker,
+  type MessageReactionDoc,
   type RoomChatMessage,
+  type RoomChatPresenceDoc,
   type RoomDoc,
   type RoomPlayerDoc,
 } from './src/services/multiplayerService';
+import {
+  configureMobileNotificationHandler,
+  getMobileNotificationPermissionState,
+  loadChatNotificationsEnabled,
+  requestMobileChatNotificationPermission,
+  saveChatNotificationsEnabled,
+  scheduleIncomingChatNotification,
+  type MobileNotificationPermissionState,
+} from './src/utils/chatNotifications';
+import { formatMultiplayerError } from './src/utils/errorMessages';
 import {
   createEmptySinglePhoneChatState,
   loadSinglePhoneChatState,
@@ -71,6 +92,8 @@ import {
   type SinglePhoneGame,
   type SinglePhonePlayer,
 } from './src/utils/specialCards';
+
+configureMobileNotificationHandler();
 
 type Screen =
   | 'home'
@@ -96,6 +119,13 @@ export default function App() {
   // Online Entry state
   const [entryTab, setEntryTab] = useState<'create' | 'join'>('create');
   const [displayName, setDisplayName] = useState('');
+  const [displayAvatar, setDisplayAvatar] = useState(() => pickDefaultAvatar('player'));
+  const [avatarPickerTarget, setAvatarPickerTarget] = useState<
+    | null
+    | { kind: 'online_entry' }
+    | { kind: 'online_lobby' }
+    | { kind: 'single_player'; playerId: string }
+  >(null);
   const [roomCodeInput, setRoomCodeInput] = useState('');
   const [entryGameMode, setEntryGameMode] = useState<GameLengthMode>('rounds');
   const [entryRounds, setEntryRounds] = useState(3);
@@ -114,20 +144,33 @@ export default function App() {
   const [actionBusy, setActionBusy] = useState(false);
   const [doubleSkipNotice, setDoubleSkipNotice] = useState(false);
   const [dismissedOnlineAwardNonce, setDismissedOnlineAwardNonce] = useState(0);
+  const [completedOnlineRound, setCompletedOnlineRound] = useState<number | null>(null);
+  const prevOnlineRoundRef = useRef<number | null>(null);
+  const prevOnlineGameNumRef = useRef<number | null>(null);
 
-  // Collapsible Room Text Chat, Stickers & Emojis state (Online & Single Phone)
+  // Collapsible Room Text Chat, Voice Notes, Emojis & Reactions state (Online & Single Phone)
   const [chatOpen, setChatOpen] = useState(false);
   const [chatMode, setChatMode] = useState<'online' | 'single_phone'>('online');
   const [chatMessages, setChatMessages] = useState<RoomChatMessage[]>([]);
-  const [onlineMyStickers, setOnlineMyStickers] = useState<PersonalSticker[]>([]);
+  const [onlineReactions, setOnlineReactions] = useState<MessageReactionDoc[]>([]);
+  const [chatPresence, setChatPresence] = useState<RoomChatPresenceDoc[]>([]);
+  const [presenceNowMs, setPresenceNowMs] = useState<number>(() => Date.now());
   const [spChatState, setSpChatState] = useState<SinglePhoneChatStoreState>(() =>
     createEmptySinglePhoneChatState()
   );
   const [spChatSenderId, setSpChatSenderId] = useState('sp-1');
   const [unreadChatCount, setUnreadChatCount] = useState(0);
-  const seenMsgCountRef = useRef(0);
+  const [chatNotificationsEnabled, setChatNotificationsEnabled] = useState(true);
+  const [notifPermission, setNotifPermission] =
+    useState<MobileNotificationPermissionState>('undetermined');
+  const initialMsgsLoadedRef = useRef(false);
+  const knownMsgIdsRef = useRef<Set<string>>(new Set());
   const chatOpenRef = useRef(false);
+  const chatNotificationsEnabledRef = useRef(true);
+  const activeRoomCodeRef = useRef<string | null>(null);
   chatOpenRef.current = chatOpen;
+  chatNotificationsEnabledRef.current = chatNotificationsEnabled;
+  activeRoomCodeRef.current = activeRoomCode;
 
   // Special Card confirmation modal state (shared cleanly between active mode)
   const [cardModal, setCardModal] = useState<{
@@ -138,10 +181,10 @@ export default function App() {
 
   // Single Phone offline state (strictly zero normal skip)
   const [singlePlayers, setSinglePlayers] = useState<SinglePhonePlayer[]>([
-    { id: 'sp-1', name: 'أحمد' },
-    { id: 'sp-2', name: 'محمد' },
-    { id: 'sp-3', name: 'عمر' },
-    { id: 'sp-4', name: 'علي' },
+    { id: 'sp-1', name: 'أحمد', avatarColor: pickDefaultAvatar(1) },
+    { id: 'sp-2', name: 'محمد', avatarColor: pickDefaultAvatar(2) },
+    { id: 'sp-3', name: 'عمر', avatarColor: pickDefaultAvatar(3) },
+    { id: 'sp-4', name: 'علي', avatarColor: pickDefaultAvatar(4) },
   ]);
   const [newSingleName, setNewSingleName] = useState('');
   const [editingPlayerId, setEditingPlayerId] = useState<string | null>(null);
@@ -151,6 +194,16 @@ export default function App() {
   const [singleRandomFirst, setSingleRandomFirst] = useState(true);
   const [singleGame, setSingleGame] = useState<SinglePhoneGame | null>(null);
   const [dismissedSingleAwardNonce, setDismissedSingleAwardNonce] = useState(0);
+  const [completedSingleRound, setCompletedSingleRound] = useState<number | null>(null);
+  const prevSingleRoundRef = useRef<number | null>(null);
+  const prevSinglePhaseRef = useRef<SinglePhoneGame['phase'] | null>(null);
+  const [spCardsRevealed, setSpCardsRevealed] = useState(false);
+  const [singleRewardRevealed, setSingleRewardRevealed] = useState(false);
+
+  const rewardScaleAnim = useRef(new Animated.Value(0.65)).current;
+  const rewardFlipAnim = useRef(new Animated.Value(0)).current;
+  const rewardGlowAnim = useRef(new Animated.Value(0)).current;
+  const rewardBurstAnim = useRef(new Animated.Value(0)).current;
 
   const t = TRANSLATIONS[language];
   const isRTL = language === 'ar';
@@ -167,6 +220,7 @@ export default function App() {
   useEffect(() => {
     const unsub = auth ? onAuthStateChanged(auth, (u) => setAuthUser(u)) : () => {};
     getSavedPlayerName().then((n) => n && setDisplayName(n));
+    getSavedPlayerAvatar().then((av) => av && setDisplayAvatar(av));
     getSavedActiveRoom().then((r) => r && setSavedRoom(r));
     AsyncStorage.getItem(LANGUAGE_STORAGE).then((l) => {
       if (l === 'ar' || l === 'en') setLanguage(l);
@@ -178,14 +232,46 @@ export default function App() {
       if (raw) {
         try {
           const parsed = JSON.parse(raw) as SinglePhonePlayer[];
-          if (Array.isArray(parsed) && parsed.length >= 2) setSinglePlayers(parsed);
+          if (Array.isArray(parsed) && parsed.length >= 2) {
+            setSinglePlayers(
+              parsed.map((p, idx) => ({
+                ...p,
+                avatarColor: p.avatarColor || pickDefaultAvatar(idx + 1),
+              }))
+            );
+          }
         } catch {
           // ignore
         }
       }
     });
     loadSinglePhoneChatState().then(setSpChatState).catch(() => {});
-    return () => unsub();
+    loadChatNotificationsEnabled().then(setChatNotificationsEnabled).catch(() => {});
+    getMobileNotificationPermissionState().then(setNotifPermission).catch(() => {});
+
+    let tapSub: Notifications.EventSubscription | null = null;
+    try {
+      tapSub = Notifications.addNotificationResponseReceivedListener((response) => {
+        const data = response.notification.request.content.data as
+          | { roomCode?: string; openChat?: boolean }
+          | undefined;
+        if (data?.openChat && activeRoomCodeRef.current) {
+          setChatMode('online');
+          setChatOpen(true);
+        }
+      });
+    } catch {
+      // ignore if notifications listener unavailable
+    }
+
+    return () => {
+      unsub();
+      try {
+        tapSub?.remove();
+      } catch {
+        // ignore
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -209,8 +295,8 @@ export default function App() {
       const res = await ensureAnonymousAuth();
       setFirebaseMissing(res.notConfigured);
       setAnonDisabled(res.anonDisabledError);
-    } catch {
-      setErrorMsg(t.errGeneric);
+    } catch (err) {
+      setErrorMsg(formatMultiplayerError(err, t));
     } finally {
       setAuthLoading(false);
     }
@@ -233,22 +319,39 @@ export default function App() {
           void saveActiveRoom(null);
           setActiveRoomCode(null);
           setRoom(null);
-          setScreen('home');
+          setErrorMsg(t.errRoomClosed);
+          setScreen('online_entry');
           return;
         }
         if (authUser && !nextRoom.playerOrder.includes(authUser.uid)) {
           void saveActiveRoom(null);
           setActiveRoomCode(null);
           setRoom(null);
+          setErrorMsg(t.errKickedFromRoom);
           setScreen('online_entry');
           return;
         }
+        if (
+          nextRoom.status === 'playing' &&
+          prevOnlineGameNumRef.current === nextRoom.gameNumber &&
+          prevOnlineRoundRef.current !== null &&
+          nextRoom.currentRound > prevOnlineRoundRef.current
+        ) {
+          setCompletedOnlineRound(prevOnlineRoundRef.current);
+          if (soundEnabled) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+        }
+        if (nextRoom.status !== 'playing' || prevOnlineGameNumRef.current !== nextRoom.gameNumber) {
+          setCompletedOnlineRound(null);
+        }
+        prevOnlineGameNumRef.current = nextRoom.gameNumber;
+        prevOnlineRoundRef.current = nextRoom.status === 'playing' ? nextRoom.currentRound : null;
+
         setRoom(nextRoom);
         setPlayers(nextPlayers);
         if (nextRoom.status === 'waiting') setScreen('online_lobby');
         else setScreen('online_game');
       },
-      (err) => setErrorMsg(err.message)
+      (err) => setErrorMsg(formatMultiplayerError(err, t))
     );
 
     void setPlayerConnectionState(activeRoomCode, true);
@@ -260,46 +363,123 @@ export default function App() {
       unsub();
       clearInterval(timer);
     };
-  }, [activeRoomCode, authUser]);
+  }, [activeRoomCode, authUser, soundEnabled, t]);
 
-  // Real-time Room Text Chat Listener
+  // Track Single Phone round transitions for Round Results summary
+  useEffect(() => {
+    if (!singleGame || singleGame.phase !== 'playing') {
+      setCompletedSingleRound(null);
+      prevSingleRoundRef.current = null;
+      prevSinglePhaseRef.current = singleGame?.phase ?? null;
+      return;
+    }
+    if (
+      prevSinglePhaseRef.current === 'playing' &&
+      prevSingleRoundRef.current !== null &&
+      singleGame.currentRound > prevSingleRoundRef.current
+    ) {
+      setCompletedSingleRound(prevSingleRoundRef.current);
+      if (soundEnabled) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    }
+    prevSingleRoundRef.current = singleGame.currentRound;
+    prevSinglePhaseRef.current = singleGame.phase;
+  }, [singleGame?.phase, singleGame?.currentRound, soundEnabled]);
+
+  // Auto-hide Single Phone secret card bar when passing phone / changing turns
+  useEffect(() => {
+    setSpCardsRevealed(false);
+  }, [singleGame?.activePlayerId, singleGame?.turnNonce]);
+
+  // Real-time Room Text Chat, Reactions, Typing/Recording Presence & Notifications Listener
   useEffect(() => {
     if (!activeRoomCode || !myUid) {
       setChatMessages([]);
+      setOnlineReactions([]);
+      setChatPresence([]);
       setUnreadChatCount(0);
-      seenMsgCountRef.current = 0;
+      initialMsgsLoadedRef.current = false;
+      knownMsgIdsRef.current = new Set();
       return;
     }
-    const unsub = subscribeToRoomMessages(activeRoomCode, myUid, (msgs) => {
-      setChatMessages(msgs);
-      if (chatOpenRef.current) {
-        seenMsgCountRef.current = msgs.length;
-        setUnreadChatCount(0);
-      } else {
-        const prevSeen = seenMsgCountRef.current;
-        if (msgs.length > prevSeen) {
-          const newOthers = msgs.slice(prevSeen).filter((m) => m.senderId !== myUid).length;
-          if (newOthers > 0) setUnreadChatCount((c) => c + newOthers);
-          seenMsgCountRef.current = msgs.length;
-        }
-      }
-    });
-    return () => unsub();
-  }, [activeRoomCode, myUid]);
 
-  // Personal Sticker Collection Listener (persists across rooms for signed-in UID)
+    initialMsgsLoadedRef.current = false;
+    knownMsgIdsRef.current = new Set();
+
+    const unsubMsgs = subscribeToRoomMessages(
+      activeRoomCode,
+      myUid,
+      (msgs) => {
+        setChatMessages(msgs);
+
+        if (!initialMsgsLoadedRef.current) {
+          initialMsgsLoadedRef.current = true;
+          knownMsgIdsRef.current = new Set(msgs.map((m) => m.id));
+          return;
+        }
+
+        const newlyArrived = msgs.filter((m) => !knownMsgIdsRef.current.has(m.id));
+        knownMsgIdsRef.current = new Set(msgs.map((m) => m.id));
+
+        if (chatOpenRef.current) {
+          setUnreadChatCount(0);
+          return;
+        }
+
+        const fromOthers = newlyArrived.filter((m) => m.senderId !== myUid);
+        if (fromOthers.length > 0) {
+          setUnreadChatCount((c) => c + fromOthers.length);
+          if (chatNotificationsEnabledRef.current) {
+            const latest = fromOthers[fromOthers.length - 1];
+            const previewBody =
+              latest.messageType === 'voice'
+                ? `🎤 ${t.replyVoicePreview}`
+                : latest.text;
+            void scheduleIncomingChatNotification({
+              roomCode: activeRoomCode,
+              title: `${latest.senderName} · ${t.newMessageNotifTitle}`,
+              body: previewBody.slice(0, 120),
+            });
+          }
+        }
+      },
+      (err) => setErrorMsg(formatMultiplayerError(err, t))
+    );
+
+    const unsubReacts = subscribeToRoomReactions(
+      activeRoomCode,
+      myUid,
+      setOnlineReactions,
+      (err) => setErrorMsg(formatMultiplayerError(err, t))
+    );
+
+    const unsubPresence = subscribeToRoomChatPresence(
+      activeRoomCode,
+      myUid,
+      (items) => {
+        setChatPresence(items);
+        setPresenceNowMs(Date.now());
+      }
+    );
+
+    return () => {
+      unsubMsgs();
+      unsubReacts();
+      unsubPresence();
+    };
+  }, [activeRoomCode, myUid, t]);
+
   useEffect(() => {
-    if (!myUid) {
-      setOnlineMyStickers([]);
-      return;
-    }
-    const unsub = subscribeToMyStickers(myUid, setOnlineMyStickers);
-    return () => unsub();
-  }, [myUid]);
+    const hasRemote = chatPresence.some((p) => p.uid !== myUid && p.status !== 'idle');
+    if (!hasRemote) return;
+    setPresenceNowMs(Date.now());
+    const id = setInterval(() => {
+      setPresenceNowMs(Date.now());
+    }, 1000);
+    return () => clearInterval(id);
+  }, [chatPresence, myUid]);
 
   useEffect(() => {
     if (chatOpen && chatMode === 'online') {
-      seenMsgCountRef.current = chatMessages.length;
       setUnreadChatCount(0);
     }
   }, [chatOpen, chatMode, chatMessages.length]);
@@ -314,10 +494,16 @@ export default function App() {
     setCardModal(null);
     setDoubleSkipNotice(false);
     setDismissedOnlineAwardNonce(0);
+    setCompletedOnlineRound(null);
+    prevOnlineRoundRef.current = null;
+    prevOnlineGameNumRef.current = null;
+    setErrorMsg('');
     await voice.leaveVoice();
     if (activeRoomCode) await leaveMultiplayerRoom(activeRoomCode);
     setActiveRoomCode(null);
     setRoom(null);
+    setOnlineReactions([]);
+    setChatPresence([]);
     setScreen('home');
   };
 
@@ -332,6 +518,7 @@ export default function App() {
     try {
       const code = await createMultiplayerRoom({
         hostName: displayName,
+        avatarColor: displayAvatar,
         language,
         gameMode: entryGameMode,
         roundsCount: entryRounds,
@@ -342,7 +529,7 @@ export default function App() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
       if (msg === 'FIREBASE_NOT_CONFIGURED') setFirebaseMissing(true);
-      else setErrorMsg(t.errGeneric);
+      else setErrorMsg(formatMultiplayerError(err, t));
     } finally {
       setSubmitting(false);
     }
@@ -362,16 +549,16 @@ export default function App() {
     }
     setSubmitting(true);
     try {
-      const res = await joinMultiplayerRoom({ rawCode: cleanCode, playerName: displayName });
+      const res = await joinMultiplayerRoom({
+        rawCode: cleanCode,
+        playerName: displayName,
+        avatarColor: displayAvatar,
+      });
       setActiveRoomCode(res.roomCode);
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
       if (msg === 'FIREBASE_NOT_CONFIGURED') setFirebaseMissing(true);
-      else if (msg === 'ROOM_NOT_FOUND') setErrorMsg(t.errRoomNotFound);
-      else if (msg === 'ROOM_STARTED') setErrorMsg(t.errRoomStarted);
-      else if (msg === 'ROOM_FULL') setErrorMsg(t.errRoomFull);
-      else if (msg === 'ROOM_CLOSED') setErrorMsg(t.errRoomClosed);
-      else setErrorMsg(t.errGeneric);
+      else setErrorMsg(formatMultiplayerError(err, t));
     } finally {
       setSubmitting(false);
     }
@@ -389,6 +576,7 @@ export default function App() {
         next.push({
           id: `sp-${Date.now()}-${num}`,
           name: language === 'ar' ? `لاعب ${num}` : `Player ${num}`,
+          avatarColor: pickDefaultAvatar(num + Date.now()),
         });
       }
       return next;
@@ -398,6 +586,11 @@ export default function App() {
   const startSinglePhone = () => {
     hapticTap();
     setDismissedSingleAwardNonce(0);
+    setCompletedSingleRound(null);
+    prevSingleRoundRef.current = null;
+    prevSinglePhaseRef.current = null;
+    setSpCardsRevealed(false);
+    setSingleRewardRevealed(false);
     setCardModal(null);
     setSingleGame(
       createSinglePhoneGame({
@@ -416,24 +609,31 @@ export default function App() {
   };
 
   const formatCardEventText = (evt: CardEvent | null): string => {
-    if (!evt) return '';
-    if (evt.type === 'awarded') {
-      const cardType = getCardTypeFromId(evt.cardId);
-      const label =
-        cardType === 'gold'
-          ? t.goldCardName
-          : cardType === 'switch'
-            ? t.switchCardName
-            : t.antiSwitchCardName;
-      return `${evt.actorName}: ${t.cardEventAwarded} (${label})`;
-    }
+    // STRICT PRIVACY: never expose card awards publicly to other players
+    if (!evt || evt.type === 'awarded') return '';
     if (evt.type === 'gold') return `${evt.actorName} ${t.cardEventGold}`;
     if (evt.type === 'switch') return `${evt.actorName} ${t.cardEventSwitch} ${evt.targetName ?? ''}`;
     return `${evt.actorName} ${t.cardEventAntiSwitch} ${evt.targetName ?? ''}`;
   };
 
+  const getClosedChatActivityLabel = (): { kind: 'typing' | 'recording'; text: string } | null => {
+    const active = chatPresence.filter(
+      (p) => p.uid !== myUid && p.status !== 'idle' && p.expiresAtMs > presenceNowMs
+    );
+    if (active.length === 0) return null;
+    const isRec = active.some((p) => p.status === 'recording');
+    const first = (isRec ? active.find((p) => p.status === 'recording') : active[0])?.name;
+    const label = first
+      ? `${first}: ${isRec ? t.chatSomeoneRecordingShort : t.chatSomeoneTypingShort}`
+      : isRec
+        ? t.chatSomeoneRecordingShort
+        : t.chatSomeoneTypingShort;
+    return { kind: isRec ? 'recording' : 'typing', text: label };
+  };
+
   const renderVoiceAndChatBar = (currentRoom: RoomDoc) => {
     const joinedVoiceCount = currentRoom.playerOrder.filter((id) => players[id]?.voiceJoined).length;
+    const chatActivity = getClosedChatActivityLabel();
     return (
       <View style={styles.cardCompact}>
         <View style={[styles.rowBetweenWrap, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
@@ -489,6 +689,23 @@ export default function App() {
             style={styles.chatToggleBtn}
           >
             <Text style={styles.chatToggleText}>{t.chatTitle}</Text>
+            {chatActivity && (
+              <View
+                style={[
+                  styles.chatActivityBadge,
+                  chatActivity.kind === 'recording' && styles.chatActivityRecBadge,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.chatActivityText,
+                    chatActivity.kind === 'recording' && styles.chatActivityRecText,
+                  ]}
+                >
+                  {chatActivity.text}
+                </Text>
+              </View>
+            )}
             {unreadChatCount > 0 && (
               <View style={styles.unreadBadge}>
                 <Text style={styles.unreadBadgeText}>
@@ -501,7 +718,11 @@ export default function App() {
 
         {!!voice.voiceError && (
           <Text style={[styles.errorText, dirText]}>
-            {voice.voiceError === 'permission_denied' ? t.voicePermissionDenied : t.voiceNotSupported}
+            {voice.voiceError === 'permission_denied'
+              ? t.voicePermissionDenied
+              : voice.voiceError === 'no_mic_device'
+                ? t.voiceMicNotFound
+                : t.voiceNotSupported}
           </Text>
         )}
       </View>
@@ -516,79 +737,101 @@ export default function App() {
     canUseGoldOrSwitch: boolean;
     canUseAntiSwitch: boolean;
     otherTargets: Array<{ uid: string; name: string }>;
-    remainingDeckCards: number;
+    privateToggleMode?: boolean;
+    isRevealed?: boolean;
+    onToggleReveal?: () => void;
   }) => (
     <View style={styles.cardCompact}>
       <View style={[styles.rowBetweenWrap, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
         <Text style={styles.inventoryHeader}>{t.inventoryTitle}</Text>
-        <Text style={styles.mutedSmall}>
-          {t.cardsRemainingDeck}: {opts.remainingDeckCards}/5
-        </Text>
+        {opts.privateToggleMode && opts.isRevealed && opts.onToggleReveal && (
+          <TouchableOpacity onPress={opts.onToggleReveal} style={styles.privacyToggleBtn}>
+            <Text style={styles.privacyToggleText}>{t.hideSecretCardsBtn}</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
-      <View style={[styles.rowGap, { flexWrap: 'wrap' }]}>
-        <TouchableOpacity
-          disabled={actionBusy || opts.goldCards < 1 || !opts.canUseGoldOrSwitch}
-          onPress={() => {
-            hapticTap();
-            setCardModal({ mode: opts.mode, kind: 'gold' });
-          }}
-          style={[
-            styles.cardChip,
-            opts.goldCards > 0 && opts.canUseGoldOrSwitch ? styles.goldChipActive : styles.chipIdle,
-            (opts.goldCards < 1 || !opts.canUseGoldOrSwitch) && styles.disabledChip,
-          ]}
-        >
-          <Text style={styles.cardChipText}>
-            {t.goldCardName} ({opts.goldCards})
+      {opts.privateToggleMode && !opts.isRevealed ? (
+        <View style={[styles.rowBetweenWrap, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
+          <Text style={[styles.mutedSmall, { flex: 1 }, dirText]}>
+            {t.singlePhoneCardsLockedHint}
           </Text>
-        </TouchableOpacity>
+          <TouchableOpacity onPress={opts.onToggleReveal} style={styles.privacyRevealBtn}>
+            <Text style={styles.privacyRevealText}>👁 {t.showSecretCardsBtn}</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <View style={[styles.rowGap, { flexWrap: 'wrap' }]}>
+          <TouchableOpacity
+            disabled={actionBusy || opts.goldCards < 1 || !opts.canUseGoldOrSwitch}
+            onPress={() => {
+              hapticTap();
+              setCardModal({ mode: opts.mode, kind: 'gold' });
+            }}
+            style={[
+              styles.cardChip,
+              opts.goldCards > 0 && opts.canUseGoldOrSwitch
+                ? styles.goldChipActive
+                : opts.goldCards > 0
+                  ? styles.goldChipPassive
+                  : styles.chipIdle,
+              opts.goldCards < 1 && styles.disabledChip,
+            ]}
+          >
+            <Text style={[styles.cardChipText, opts.goldCards > 0 && styles.goldChipText]}>
+              👑 {t.goldCardName} ({opts.goldCards})
+            </Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          disabled={
-            actionBusy ||
-            opts.switchCards < 1 ||
-            !opts.canUseGoldOrSwitch ||
-            opts.otherTargets.length === 0
-          }
-          onPress={() => {
-            hapticTap();
-            setSwitchTargetUid(opts.otherTargets[0]?.uid ?? '');
-            setCardModal({ mode: opts.mode, kind: 'switch' });
-          }}
-          style={[
-            styles.cardChip,
-            opts.switchCards > 0 && opts.canUseGoldOrSwitch && opts.otherTargets.length > 0
-              ? styles.switchChipActive
-              : styles.chipIdle,
-            (opts.switchCards < 1 || !opts.canUseGoldOrSwitch || opts.otherTargets.length === 0) &&
-              styles.disabledChip,
-          ]}
-        >
-          <Text style={styles.cardChipText}>
-            {t.switchCardName} ({opts.switchCards})
-          </Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            disabled={
+              actionBusy ||
+              opts.switchCards < 1 ||
+              !opts.canUseGoldOrSwitch ||
+              opts.otherTargets.length === 0
+            }
+            onPress={() => {
+              hapticTap();
+              setSwitchTargetUid(opts.otherTargets[0]?.uid ?? '');
+              setCardModal({ mode: opts.mode, kind: 'switch' });
+            }}
+            style={[
+              styles.cardChip,
+              opts.switchCards > 0 && opts.canUseGoldOrSwitch && opts.otherTargets.length > 0
+                ? styles.switchChipActive
+                : opts.switchCards > 0
+                  ? styles.switchChipPassive
+                  : styles.chipIdle,
+              opts.switchCards < 1 && styles.disabledChip,
+            ]}
+          >
+            <Text style={[styles.cardChipText, opts.switchCards > 0 && styles.switchChipText]}>
+              ⇄ {t.switchCardName} ({opts.switchCards})
+            </Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          disabled={actionBusy || opts.antiSwitchCards < 1 || !opts.canUseAntiSwitch}
-          onPress={() => {
-            hapticTap();
-            setCardModal({ mode: opts.mode, kind: 'anti_switch' });
-          }}
-          style={[
-            styles.cardChip,
-            opts.antiSwitchCards > 0 && opts.canUseAntiSwitch
-              ? styles.antiChipActive
-              : styles.chipIdle,
-            (opts.antiSwitchCards < 1 || !opts.canUseAntiSwitch) && styles.disabledChip,
-          ]}
-        >
-          <Text style={styles.cardChipText}>
-            {t.antiSwitchCardName} ({opts.antiSwitchCards})
-          </Text>
-        </TouchableOpacity>
-      </View>
+          <TouchableOpacity
+            disabled={actionBusy || opts.antiSwitchCards < 1 || !opts.canUseAntiSwitch}
+            onPress={() => {
+              hapticTap();
+              setCardModal({ mode: opts.mode, kind: 'anti_switch' });
+            }}
+            style={[
+              styles.cardChip,
+              opts.antiSwitchCards > 0 && opts.canUseAntiSwitch
+                ? styles.antiChipActive
+                : opts.antiSwitchCards > 0
+                  ? styles.antiChipPassive
+                  : styles.chipIdle,
+              opts.antiSwitchCards < 1 && styles.disabledChip,
+            ]}
+          >
+            <Text style={[styles.cardChipText, opts.antiSwitchCards > 0 && styles.antiChipText]}>
+              🛡️ {t.antiSwitchCardName} ({opts.antiSwitchCards})
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 
@@ -638,9 +881,10 @@ export default function App() {
             .map((p) => ({ uid: p.id, name: p.name }))
         : [];
 
-  // Determine Reward Overlay visibility
+  // Determine Reward Overlay visibility (sequenced AFTER Round Results summary)
   const onlineAwardVisible = Boolean(
     screen === 'online_game' &&
+      completedOnlineRound === null &&
       room &&
       room.status === 'playing' &&
       room.activePlayerId === myUid &&
@@ -652,6 +896,7 @@ export default function App() {
 
   const singleAwardVisible = Boolean(
     screen === 'single_game' &&
+      completedSingleRound === null &&
       singleGame &&
       singleGame.phase === 'playing' &&
       singleGame.lastCardEvent?.type === 'awarded' &&
@@ -666,6 +911,75 @@ export default function App() {
       : null;
 
   const activeRewardCardType = activeRewardEvent ? getCardTypeFromId(activeRewardEvent.cardId) : null;
+
+  useEffect(() => {
+    setSingleRewardRevealed(false);
+  }, [activeRewardEvent?.nonce, activeRewardEvent?.cardId]);
+
+  useEffect(() => {
+    const shouldAnimate =
+      Boolean(activeRewardEvent) && (!singleAwardVisible || singleRewardRevealed);
+    if (!shouldAnimate) return;
+
+    if (soundEnabled) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    }
+
+    rewardScaleAnim.setValue(0.55);
+    rewardFlipAnim.setValue(0);
+    rewardGlowAnim.setValue(0.6);
+    rewardBurstAnim.setValue(0);
+
+    Animated.parallel([
+      Animated.spring(rewardScaleAnim, {
+        toValue: 1,
+        friction: 6,
+        tension: 110,
+        useNativeDriver: true,
+      }),
+      Animated.timing(rewardFlipAnim, {
+        toValue: 1,
+        duration: 540,
+        easing: Easing.out(Easing.back(1.2)),
+        useNativeDriver: true,
+      }),
+      Animated.timing(rewardBurstAnim, {
+        toValue: 1,
+        duration: 780,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start();
+
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(rewardGlowAnim, {
+          toValue: 1,
+          duration: 1100,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(rewardGlowAnim, {
+          toValue: 0.6,
+          duration: 1100,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [
+    activeRewardEvent?.nonce,
+    activeRewardEvent?.cardId,
+    singleAwardVisible,
+    singleRewardRevealed,
+    soundEnabled,
+    rewardScaleAnim,
+    rewardFlipAnim,
+    rewardGlowAnim,
+    rewardBurstAnim,
+  ]);
 
   return (
     <SafeAreaProvider>
@@ -777,17 +1091,29 @@ export default function App() {
                         {language === 'ar' ? `غرفة سابقة: ${savedRoom}` : `Active Room: ${savedRoom}`}
                       </Text>
                       <TouchableOpacity
+                        disabled={submitting}
                         onPress={async () => {
+                          setErrorMsg('');
                           setSubmitting(true);
                           try {
                             const res = await joinMultiplayerRoom({
                               rawCode: savedRoom,
                               playerName: displayName || 'Player',
+                              avatarColor: displayAvatar,
                             });
                             setActiveRoomCode(res.roomCode);
-                          } catch {
-                            await saveActiveRoom(null);
-                            setSavedRoom(null);
+                          } catch (err) {
+                            const raw = err instanceof Error ? err.message : '';
+                            if (
+                              raw === 'ROOM_NOT_FOUND' ||
+                              raw === 'ROOM_CLOSED' ||
+                              raw === 'ROOM_STARTED' ||
+                              raw === 'ROOM_FULL'
+                            ) {
+                              await saveActiveRoom(null);
+                              setSavedRoom(null);
+                            }
+                            setErrorMsg(formatMultiplayerError(err, t));
                           } finally {
                             setSubmitting(false);
                           }
@@ -855,14 +1181,38 @@ export default function App() {
                     )}
 
                     <Text style={[styles.label, dirText]}>{t.yourName}</Text>
-                    <TextInput
-                      value={displayName}
-                      onChangeText={setDisplayName}
-                      maxLength={24}
-                      placeholder={t.yourNamePlaceholder}
-                      placeholderTextColor="#9C8D7E"
-                      style={[styles.input, dirText]}
-                    />
+                    <View style={styles.rowGap}>
+                      <PlayerAvatar
+                        name={displayName || 'Player'}
+                        paletteId={displayAvatar}
+                        size="lg"
+                        editable
+                        onPress={() => {
+                          hapticTap();
+                          setAvatarPickerTarget({ kind: 'online_entry' });
+                        }}
+                      />
+                      <View style={{ flex: 1, gap: 4 }}>
+                        <TextInput
+                          value={displayName}
+                          onChangeText={setDisplayName}
+                          maxLength={24}
+                          placeholder={t.yourNamePlaceholder}
+                          placeholderTextColor="#9C8D7E"
+                          style={[styles.input, dirText]}
+                        />
+                        <TouchableOpacity
+                          onPress={() => {
+                            hapticTap();
+                            setAvatarPickerTarget({ kind: 'online_entry' });
+                          }}
+                        >
+                          <Text style={[styles.avatarLinkText, dirText]}>
+                            {t.chooseAvatarTitle} · {t.tapAvatarHint}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
 
                     {entryTab === 'create' && (
                       <View style={styles.sectionGap}>
@@ -968,6 +1318,12 @@ export default function App() {
 
           {screen === 'online_lobby' && room && (
             <View style={styles.sectionGap}>
+              {!!errorMsg && (
+                <TouchableOpacity onPress={() => setErrorMsg('')} style={styles.errorBanner}>
+                  <Text style={[styles.errorText, dirText]}>{errorMsg}</Text>
+                </TouchableOpacity>
+              )}
+
               <View style={styles.card}>
                 <Text style={[styles.label, dirText]}>{t.shareCodePrompt}</Text>
                 <Text style={styles.bigRoomCode}>{room.roomCode}</Text>
@@ -1008,39 +1364,59 @@ export default function App() {
                   const isSpeaking = Boolean(voice.speakingUids[pid]);
                   return (
                     <View key={pid} style={styles.playerRow}>
-                      <View style={{ flex: 1 }}>
-                        <View style={[styles.rowGap, { flexWrap: 'wrap' }]}>
-                          <Text style={styles.playerName}>
-                            {p.name} {p.isHost ? `(${t.hostBadge})` : ''}
-                          </Text>
-                          {p.voiceJoined && (
-                            <Text
-                              style={[
-                                styles.micBadge,
-                                p.micMuted
-                                  ? styles.micMutedBadge
-                                  : isSpeaking
-                                    ? styles.micSpeakingBadge
-                                    : styles.micLiveBadge,
-                              ]}
-                            >
-                              {p.micMuted
-                                ? t.micMutedLabel
-                                : isSpeaking
-                                  ? t.speakingLabel
-                                  : t.micLiveLabel}
+                      <View style={[styles.rowGap, { flex: 1 }]}>
+                        <PlayerAvatar
+                          name={p.name}
+                          paletteId={p.avatarColor}
+                          size="md"
+                          active={p.isHost || isSpeaking}
+                          editable={pid === myUid}
+                          onPress={
+                            pid === myUid
+                              ? () => {
+                                  hapticTap();
+                                  setAvatarPickerTarget({ kind: 'online_lobby' });
+                                }
+                              : undefined
+                          }
+                        />
+                        <View style={{ flex: 1 }}>
+                          <View style={[styles.rowGap, { flexWrap: 'wrap' }]}>
+                            <Text style={styles.playerName}>
+                              {p.name} {p.isHost ? `(${t.hostBadge})` : ''}
                             </Text>
-                          )}
+                            {p.voiceJoined && (
+                              <Text
+                                style={[
+                                  styles.micBadge,
+                                  p.micMuted
+                                    ? styles.micMutedBadge
+                                    : isSpeaking
+                                      ? styles.micSpeakingBadge
+                                      : styles.micLiveBadge,
+                                ]}
+                              >
+                                {p.micMuted
+                                  ? t.micMutedLabel
+                                  : isSpeaking
+                                    ? t.speakingLabel
+                                    : t.micLiveLabel}
+                              </Text>
+                            )}
+                          </View>
+                          <Text style={styles.mutedSmall}>
+                            {p.connected ? t.connected : t.disconnected}
+                          </Text>
                         </View>
-                        <Text style={styles.mutedSmall}>
-                          {p.connected ? t.connected : t.disconnected}
-                        </Text>
                       </View>
                       {isHost && pid !== myUid && (
                         <TouchableOpacity
                           onPress={() => {
                             hapticTap();
-                            void kickPlayerFromLobby(room.roomCode, pid);
+                            setErrorMsg('');
+                            void kickPlayerFromLobby(room.roomCode, pid).catch((err) =>
+                              setErrorMsg(formatMultiplayerError(err, t))
+                            );
                           }}
                           style={styles.kickBtn}
                         >
@@ -1063,13 +1439,14 @@ export default function App() {
                       <TouchableOpacity
                         onPress={() => {
                           hapticTap();
+                          setErrorMsg('');
                           void updateLobbySettings(room.roomCode, {
                             gameMode: 'rounds',
                             roundsCount: Math.min(
                               getMaxRoundsForPlayers(room.playerOrder.length),
                               room.roundsCount
                             ),
-                          });
+                          }).catch((err) => setErrorMsg(formatMultiplayerError(err, t)));
                         }}
                         style={[styles.segmentBtn, room.gameMode === 'rounds' && styles.segmentActive]}
                       >
@@ -1085,7 +1462,10 @@ export default function App() {
                       <TouchableOpacity
                         onPress={() => {
                           hapticTap();
-                          void updateLobbySettings(room.roomCode, { gameMode: 'all_questions' });
+                          setErrorMsg('');
+                          void updateLobbySettings(room.roomCode, {
+                            gameMode: 'all_questions',
+                          }).catch((err) => setErrorMsg(formatMultiplayerError(err, t)));
                         }}
                         style={[
                           styles.segmentBtn,
@@ -1107,11 +1487,12 @@ export default function App() {
                       <View style={styles.sectionGap}>
                         <View style={styles.stepperRow}>
                           <TouchableOpacity
-                            onPress={() =>
+                            onPress={() => {
+                              setErrorMsg('');
                               void updateLobbySettings(room.roomCode, {
                                 roundsCount: Math.max(1, room.roundsCount - 1),
-                              })
-                            }
+                              }).catch((err) => setErrorMsg(formatMultiplayerError(err, t)));
+                            }}
                             style={styles.stepBtn}
                           >
                             <Text style={styles.stepBtnText}>−</Text>
@@ -1121,14 +1502,15 @@ export default function App() {
                             {t.roundUnit}
                           </Text>
                           <TouchableOpacity
-                            onPress={() =>
+                            onPress={() => {
+                              setErrorMsg('');
                               void updateLobbySettings(room.roomCode, {
                                 roundsCount: Math.min(
                                   getMaxRoundsForPlayers(room.playerOrder.length),
                                   room.roundsCount + 1
                                 ),
-                              })
-                            }
+                              }).catch((err) => setErrorMsg(formatMultiplayerError(err, t)));
+                            }}
                             style={styles.stepBtn}
                           >
                             <Text style={styles.stepBtnText}>+</Text>
@@ -1152,23 +1534,33 @@ export default function App() {
                       <Text style={[styles.playerName, dirText]}>{t.randomFirstPlayer}</Text>
                       <Switch
                         value={room.randomFirstPlayer}
-                        onValueChange={(val) =>
-                          void updateLobbySettings(room.roomCode, { randomFirstPlayer: val })
-                        }
+                        onValueChange={(val) => {
+                          setErrorMsg('');
+                          void updateLobbySettings(room.roomCode, { randomFirstPlayer: val }).catch(
+                            (err) => setErrorMsg(formatMultiplayerError(err, t))
+                          );
+                        }}
                         trackColor={{ false: '#D5C7B2', true: '#8B5E3C' }}
                         thumbColor={room.randomFirstPlayer ? '#231A15' : '#FFFDF9'}
                       />
                     </View>
 
                     <TouchableOpacity
-                      disabled={room.playerOrder.length < 2}
+                      disabled={actionBusy || room.playerOrder.length < 2}
                       onPress={() => {
                         hapticTap();
+                        setErrorMsg('');
                         setDoubleSkipNotice(false);
                         setDismissedOnlineAwardNonce(0);
-                        void startOrRestartMultiplayerGame(room.roomCode);
+                        setActionBusy(true);
+                        void startOrRestartMultiplayerGame(room.roomCode)
+                          .catch((err) => setErrorMsg(formatMultiplayerError(err, t)))
+                          .finally(() => setActionBusy(false));
                       }}
-                      style={[styles.primaryBtn, room.playerOrder.length < 2 && styles.disabledBtn]}
+                      style={[
+                        styles.primaryBtn,
+                        (actionBusy || room.playerOrder.length < 2) && styles.disabledBtn,
+                      ]}
                     >
                       <Text style={styles.primaryBtnText}>{t.startGame}</Text>
                     </TouchableOpacity>
@@ -1178,7 +1570,12 @@ export default function App() {
                     <Text style={[styles.mutedText, dirText]}>{t.waitingForHost}</Text>
                     {players[room.hostId] && !players[room.hostId].connected && (
                       <TouchableOpacity
-                        onPress={() => void claimDisconnectedHost(room.roomCode)}
+                        onPress={() => {
+                          setErrorMsg('');
+                          void claimDisconnectedHost(room.roomCode).catch((err) =>
+                            setErrorMsg(formatMultiplayerError(err, t))
+                          );
+                        }}
                         style={styles.secondaryBtn}
                       >
                         <Text style={styles.secondaryBtnText}>{t.claimHost}</Text>
@@ -1192,6 +1589,12 @@ export default function App() {
 
           {screen === 'online_game' && room && (
             <View style={styles.sectionGap}>
+              {!!errorMsg && (
+                <TouchableOpacity onPress={() => setErrorMsg('')} style={styles.errorBanner}>
+                  <Text style={[styles.errorText, dirText]}>{errorMsg}</Text>
+                </TouchableOpacity>
+              )}
+
               {room.status === 'finished' || room.status === 'exhausted' ? (
                 <View style={styles.card}>
                   <Text style={[styles.pageTitle, dirText]}>
@@ -1210,9 +1613,12 @@ export default function App() {
                       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
                       .map((p, idx) => (
                         <View key={p.uid} style={styles.playerRow}>
-                          <Text style={styles.playerName}>
-                            #{idx + 1} {p.name}
-                          </Text>
+                          <View style={[styles.rowGap, { flex: 1 }]}>
+                            <PlayerAvatar name={p.name} paletteId={p.avatarColor} size="sm" active={idx === 0} />
+                            <Text style={styles.playerName}>
+                              #{idx + 1} {p.name}
+                            </Text>
+                          </View>
                           <Text
                             style={[
                               styles.scoreValue,
@@ -1227,13 +1633,18 @@ export default function App() {
 
                   {myUid === room.hostId ? (
                     <TouchableOpacity
+                      disabled={actionBusy}
                       onPress={() => {
                         hapticTap();
+                        setErrorMsg('');
                         setDoubleSkipNotice(false);
                         setDismissedOnlineAwardNonce(0);
-                        void startOrRestartMultiplayerGame(room.roomCode);
+                        setActionBusy(true);
+                        void startOrRestartMultiplayerGame(room.roomCode)
+                          .catch((err) => setErrorMsg(formatMultiplayerError(err, t)))
+                          .finally(() => setActionBusy(false));
                       }}
-                      style={styles.primaryBtn}
+                      style={[styles.primaryBtn, actionBusy && styles.disabledBtn]}
                     >
                       <Text style={styles.primaryBtnText}>{t.playAgain}</Text>
                     </TouchableOpacity>
@@ -1298,12 +1709,30 @@ export default function App() {
                           canUseGoldOrSwitch,
                           canUseAntiSwitch,
                           otherTargets,
-                          remainingDeckCards: room.availableSpecialCards?.length ?? 0,
                         })}
 
-                      {!!room.lastCardEvent && (
-                        <View style={styles.eventBanner}>
-                          <Text style={[styles.eventBannerText, dirText]}>
+                      {!!room.lastCardEvent && room.lastCardEvent.type !== 'awarded' && (
+                        <View
+                          style={[
+                            styles.eventBanner,
+                            room.lastCardEvent.type === 'gold'
+                              ? styles.goldChipActive
+                              : room.lastCardEvent.type === 'switch'
+                                ? styles.switchChipActive
+                                : styles.antiChipActive,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.eventBannerText,
+                              room.lastCardEvent.type === 'gold'
+                                ? styles.goldChipText
+                                : room.lastCardEvent.type === 'switch'
+                                  ? styles.switchChipText
+                                  : styles.antiChipText,
+                              dirText,
+                            ]}
+                          >
                             {formatCardEventText(room.lastCardEvent)}
                           </Text>
                         </View>
@@ -1343,13 +1772,21 @@ export default function App() {
 
                       <View style={styles.card}>
                         <View style={[styles.rowBetweenWrap, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                          <View>
-                            <Text style={[styles.label, dirText]}>
-                              {isMyTurn ? t.yourTurnTitle : t.activePlayerTurn}
-                            </Text>
-                            <Text style={[styles.activePlayerName, dirText]}>
-                              {activePlayer?.name ?? '...'}
-                            </Text>
+                          <View style={[styles.rowGap, { flex: 1 }]}>
+                            <PlayerAvatar
+                              name={activePlayer?.name ?? '...'}
+                              paletteId={activePlayer?.avatarColor}
+                              size="md"
+                              active
+                            />
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.label, dirText]}>
+                                {isMyTurn ? t.yourTurnTitle : t.activePlayerTurn}
+                              </Text>
+                              <Text style={[styles.activePlayerName, dirText]} numberOfLines={1}>
+                                {activePlayer?.name ?? '...'}
+                              </Text>
+                            </View>
                           </View>
                           <View style={{ alignItems: isRTL ? 'flex-start' : 'flex-end' }}>
                             <Text style={styles.mutedSmall}>{t.scoreLabel}</Text>
@@ -1411,8 +1848,11 @@ export default function App() {
                               disabled={actionBusy}
                               onPress={() => {
                                 hapticTap();
+                                setErrorMsg('');
                                 setActionBusy(true);
-                                void useAntiSwitchCard(room.roomCode).finally(() => setActionBusy(false));
+                                void useAntiSwitchCard(room.roomCode)
+                                  .catch((e) => setErrorMsg(formatMultiplayerError(e, t)))
+                                  .finally(() => setActionBusy(false));
                               }}
                               style={[styles.antiDefendBtn, actionBusy && styles.disabledBtn]}
                             >
@@ -1423,13 +1863,14 @@ export default function App() {
                               disabled={actionBusy || !canNormalSkip}
                               onPress={() => {
                                 hapticTap();
+                                setErrorMsg('');
                                 const isThird = (myPlayer?.skipsUsed ?? 0) === 2 && !myPlayer?.doublePenaltyUsed;
                                 setActionBusy(true);
                                 void skipTurnQuestion(room.roomCode)
                                   .then(() => {
                                     if (isThird) setDoubleSkipNotice(true);
                                   })
-                                  .catch((e) => setErrorMsg(e instanceof Error ? e.message : t.errGeneric))
+                                  .catch((e) => setErrorMsg(formatMultiplayerError(e, t)))
                                   .finally(() => setActionBusy(false));
                               }}
                               style={[
@@ -1447,10 +1888,11 @@ export default function App() {
                             disabled={actionBusy}
                             onPress={() => {
                               hapticTap();
+                              setErrorMsg('');
                               setDoubleSkipNotice(false);
                               setActionBusy(true);
                               void advanceTurnNextQuestion(room.roomCode)
-                                .catch((e) => setErrorMsg(e instanceof Error ? e.message : t.errGeneric))
+                                .catch((e) => setErrorMsg(formatMultiplayerError(e, t)))
                                 .finally(() => setActionBusy(false));
                             }}
                             style={[styles.primaryBtn, { flex: 1 }, actionBusy && styles.disabledBtn]}
@@ -1465,10 +1907,11 @@ export default function App() {
                           disabled={actionBusy}
                           onPress={() => {
                             hapticTap();
+                            setErrorMsg('');
                             setActionBusy(true);
-                            void advanceTurnNextQuestion(room.roomCode).finally(() =>
-                              setActionBusy(false)
-                            );
+                            void advanceTurnNextQuestion(room.roomCode)
+                              .catch((e) => setErrorMsg(formatMultiplayerError(e, t)))
+                              .finally(() => setActionBusy(false));
                           }}
                           style={styles.secondaryBtn}
                         >
@@ -1478,7 +1921,12 @@ export default function App() {
 
                       {myUid !== room.hostId && hostPlayer && !hostPlayer.connected && (
                         <TouchableOpacity
-                          onPress={() => void claimDisconnectedHost(room.roomCode)}
+                          onPress={() => {
+                            setErrorMsg('');
+                            void claimDisconnectedHost(room.roomCode).catch((e) =>
+                              setErrorMsg(formatMultiplayerError(e, t))
+                            );
+                          }}
                           style={styles.secondaryBtn}
                         >
                           <Text style={styles.secondaryBtnText}>{t.claimHost}</Text>
@@ -1496,12 +1944,19 @@ export default function App() {
                           const isSpeaking = Boolean(voice.speakingUids[pid]);
                           return (
                             <View key={pid} style={styles.playerRow}>
-                              <View style={{ flex: 1 }}>
-                                <View style={[styles.rowGap, { flexWrap: 'wrap' }]}>
-                                  <Text style={styles.playerName}>
-                                    {isTurn ? '▶ ' : ''}
-                                    {p.name} {p.isHost ? `(${t.hostBadge})` : ''}
-                                  </Text>
+                              <View style={[styles.rowGap, { flex: 1 }]}>
+                                <PlayerAvatar
+                                  name={p.name}
+                                  paletteId={p.avatarColor}
+                                  size="sm"
+                                  active={isTurn || isSpeaking}
+                                />
+                                <View style={{ flex: 1 }}>
+                                  <View style={[styles.rowGap, { flexWrap: 'wrap' }]}>
+                                    <Text style={styles.playerName}>
+                                      {isTurn ? '▶ ' : ''}
+                                      {p.name} {p.isHost ? `(${t.hostBadge})` : ''}
+                                    </Text>
                                   {p.pendingDoubleTurn && !p.doublePenaltyUsed && (
                                     <Text style={styles.doubleBadge}>2×</Text>
                                   )}
@@ -1523,6 +1978,7 @@ export default function App() {
                                           : t.micLiveLabel}
                                     </Text>
                                   )}
+                                  </View>
                                 </View>
                               </View>
                               <View style={[styles.rowGap, { gap: 12 }]}>
@@ -1587,7 +2043,14 @@ export default function App() {
                       hapticTap();
                       const clean = newSingleName.trim().slice(0, 24);
                       if (!clean || singlePlayers.length >= 12) return;
-                      setSinglePlayers((prev) => [...prev, { id: `sp-${Date.now()}`, name: clean }]);
+                      setSinglePlayers((prev) => [
+                        ...prev,
+                        {
+                          id: `sp-${Date.now()}`,
+                          name: clean,
+                          avatarColor: pickDefaultAvatar(clean + prev.length),
+                        },
+                      ]);
                       setNewSingleName('');
                     }}
                     style={styles.smallPrimaryBtn}
@@ -1600,19 +2063,31 @@ export default function App() {
                   const isEditing = editingPlayerId === p.id;
                   return (
                     <View key={p.id} style={styles.playerRow}>
-                      {isEditing ? (
-                        <TextInput
-                          value={editingPlayerName}
-                          onChangeText={setEditingPlayerName}
-                          maxLength={24}
-                          autoFocus
-                          style={[styles.input, { flex: 1, marginRight: 8 }, dirText]}
+                      <View style={[styles.rowGap, { flex: 1 }]}>
+                        <PlayerAvatar
+                          name={p.name}
+                          paletteId={p.avatarColor}
+                          size="sm"
+                          editable
+                          onPress={() => {
+                            hapticTap();
+                            setAvatarPickerTarget({ kind: 'single_player', playerId: p.id });
+                          }}
                         />
-                      ) : (
-                        <Text style={styles.playerName}>
-                          {idx + 1}. {p.name}
-                        </Text>
-                      )}
+                        {isEditing ? (
+                          <TextInput
+                            value={editingPlayerName}
+                            onChangeText={setEditingPlayerName}
+                            maxLength={24}
+                            autoFocus
+                            style={[styles.input, { flex: 1, marginRight: 8 }, dirText]}
+                          />
+                        ) : (
+                          <Text style={[styles.playerName, { flex: 1 }]} numberOfLines={1}>
+                            {idx + 1}. {p.name}
+                          </Text>
+                        )}
+                      </View>
 
                       <View style={styles.rowGap}>
                         {isEditing ? (
@@ -1765,9 +2240,17 @@ export default function App() {
                       .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
                       .map((p, idx) => (
                         <View key={p.id} style={styles.playerRow}>
-                          <Text style={styles.playerName}>
-                            #{idx + 1} {p.name}
-                          </Text>
+                          <View style={[styles.rowGap, { flex: 1 }]}>
+                            <PlayerAvatar
+                              name={p.name}
+                              paletteId={p.avatarColor}
+                              size="sm"
+                              active={idx === 0}
+                            />
+                            <Text style={styles.playerName}>
+                              #{idx + 1} {p.name}
+                            </Text>
+                          </View>
                           <Text
                             style={[
                               styles.scoreValue,
@@ -1836,12 +2319,33 @@ export default function App() {
                           canUseGoldOrSwitch,
                           canUseAntiSwitch,
                           otherTargets,
-                          remainingDeckCards: singleGame.availableSpecialCards.length,
+                          privateToggleMode: true,
+                          isRevealed: spCardsRevealed,
+                          onToggleReveal: () => setSpCardsRevealed((v) => !v),
                         })}
 
-                      {!!singleGame.lastCardEvent && (
-                        <View style={styles.eventBanner}>
-                          <Text style={[styles.eventBannerText, dirText]}>
+                      {!!singleGame.lastCardEvent && singleGame.lastCardEvent.type !== 'awarded' && (
+                        <View
+                          style={[
+                            styles.eventBanner,
+                            singleGame.lastCardEvent.type === 'gold'
+                              ? styles.goldChipActive
+                              : singleGame.lastCardEvent.type === 'switch'
+                                ? styles.switchChipActive
+                                : styles.antiChipActive,
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.eventBannerText,
+                              singleGame.lastCardEvent.type === 'gold'
+                                ? styles.goldChipText
+                                : singleGame.lastCardEvent.type === 'switch'
+                                  ? styles.switchChipText
+                                  : styles.antiChipText,
+                              dirText,
+                            ]}
+                          >
                             {formatCardEventText(singleGame.lastCardEvent)}
                           </Text>
                         </View>
@@ -1882,9 +2386,7 @@ export default function App() {
                             }}
                             style={styles.chatToggleBtn}
                           >
-                            <Text style={styles.chatToggleText}>
-                              {t.chatTabMessages} · {t.chatTabStickers}
-                            </Text>
+                            <Text style={styles.chatToggleText}>{t.chatTitle}</Text>
                             {spChatState.messages.length > 0 && (
                               <View style={styles.unreadBadge}>
                                 <Text style={styles.unreadBadgeText}>
@@ -1900,11 +2402,19 @@ export default function App() {
 
                       <View style={styles.card}>
                         <View style={[styles.rowBetweenWrap, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
-                          <View>
-                            <Text style={[styles.label, dirText]}>{t.passPhonePrompt}</Text>
-                            <Text style={[styles.activePlayerName, dirText]}>
-                              {activePlayer?.name}
-                            </Text>
+                          <View style={[styles.rowGap, { flex: 1 }]}>
+                            <PlayerAvatar
+                              name={activePlayer?.name ?? ''}
+                              paletteId={activePlayer?.avatarColor}
+                              size="md"
+                              active
+                            />
+                            <View style={{ flex: 1 }}>
+                              <Text style={[styles.label, dirText]}>{t.passPhonePrompt}</Text>
+                              <Text style={[styles.activePlayerName, dirText]} numberOfLines={1}>
+                                {activePlayer?.name}
+                              </Text>
+                            </View>
                           </View>
                           <View style={{ alignItems: isRTL ? 'flex-start' : 'flex-end' }}>
                             <Text style={styles.mutedSmall}>{t.scoreLabel}</Text>
@@ -1972,10 +2482,18 @@ export default function App() {
                           const isTurn = p.id === activePlayer?.id;
                           return (
                             <View key={p.id} style={styles.playerRow}>
-                              <Text style={styles.playerName}>
-                                {isTurn ? '▶ ' : ''}
-                                {p.name}
-                              </Text>
+                              <View style={[styles.rowGap, { flex: 1 }]}>
+                                <PlayerAvatar
+                                  name={p.name}
+                                  paletteId={p.avatarColor}
+                                  size="sm"
+                                  active={isTurn}
+                                />
+                                <Text style={styles.playerName}>
+                                  {isTurn ? '▶ ' : ''}
+                                  {p.name}
+                                </Text>
+                              </View>
                               <Text
                                 style={[
                                   styles.scoreValue,
@@ -2070,6 +2588,48 @@ export default function App() {
                   />
                 </View>
               </View>
+
+              <View style={styles.card}>
+                <View style={styles.playerRow}>
+                  <View style={{ flex: 1, paddingEnd: 8 }}>
+                    <Text style={[styles.cardTitle, dirText]}>{t.chatNotificationsLabel}</Text>
+                    <Text style={[styles.mutedSmall, dirText]}>{t.chatNotificationsSub}</Text>
+                  </View>
+                  <Switch
+                    value={chatNotificationsEnabled}
+                    onValueChange={(nextVal) => {
+                      hapticTap();
+                      setChatNotificationsEnabled(nextVal);
+                      void saveChatNotificationsEnabled(nextVal);
+                      if (nextVal && notifPermission !== 'granted') {
+                        void requestMobileChatNotificationPermission().then(setNotifPermission);
+                      }
+                    }}
+                    trackColor={{ false: '#D5C7B2', true: '#8B5E3C' }}
+                    thumbColor={chatNotificationsEnabled ? '#231A15' : '#FFFDF9'}
+                  />
+                </View>
+                <Text style={[styles.mutedText, dirText]}>
+                  {notifPermission === 'granted'
+                    ? t.chatNotificationsGranted
+                    : notifPermission === 'denied'
+                      ? t.chatNotificationsDenied
+                      : t.chatNotificationsDefault}
+                </Text>
+                {notifPermission !== 'granted' && (
+                  <TouchableOpacity
+                    onPress={() => {
+                      hapticTap();
+                      void requestMobileChatNotificationPermission().then(setNotifPermission);
+                    }}
+                    style={styles.secondaryBtn}
+                  >
+                    <Text style={styles.secondaryBtnText}>{t.enableNotificationsBtn}</Text>
+                  </TouchableOpacity>
+                )}
+                <Text style={[styles.mutedSmall, dirText]}>{t.chatPushScopeNote}</Text>
+              </View>
+
               <View style={styles.card}>
                 <Text style={[styles.cardTitle, dirText]}>{t.offlineReadyLabel}</Text>
                 <Text style={[styles.mutedText, dirText]}>{t.offlineReadySub}</Text>
@@ -2118,7 +2678,18 @@ export default function App() {
                             selected && styles.targetRowSelected,
                           ]}
                         >
-                          <Text style={styles.playerName}>{target.name}</Text>
+                          <View style={styles.rowGap}>
+                            <PlayerAvatar
+                              name={target.name}
+                              paletteId={
+                                cardModal.mode === 'online'
+                                  ? players[target.uid]?.avatarColor
+                                  : singleGame?.players.find((pl) => pl.id === target.uid)?.avatarColor
+                              }
+                              size="sm"
+                            />
+                            <Text style={styles.playerName}>{target.name}</Text>
+                          </View>
                         </TouchableOpacity>
                       );
                     })}
@@ -2139,15 +2710,20 @@ export default function App() {
                     if (!modal) return;
                     hapticTap();
                     if (modal.mode === 'online' && room) {
+                      setErrorMsg('');
                       setActionBusy(true);
                       if (modal.kind === 'gold') {
-                        void useGoldCard(room.roomCode).finally(() => setActionBusy(false));
+                        void useGoldCard(room.roomCode)
+                          .catch((e) => setErrorMsg(formatMultiplayerError(e, t)))
+                          .finally(() => setActionBusy(false));
                       } else if (modal.kind === 'switch' && chosenTarget) {
-                        void useSwitchCard(room.roomCode, chosenTarget).finally(() =>
-                          setActionBusy(false)
-                        );
+                        void useSwitchCard(room.roomCode, chosenTarget)
+                          .catch((e) => setErrorMsg(formatMultiplayerError(e, t)))
+                          .finally(() => setActionBusy(false));
                       } else if (modal.kind === 'anti_switch') {
-                        void useAntiSwitchCard(room.roomCode).finally(() => setActionBusy(false));
+                        void useAntiSwitchCard(room.roomCode)
+                          .catch((e) => setErrorMsg(formatMultiplayerError(e, t)))
+                          .finally(() => setActionBusy(false));
                       }
                     } else if (modal.mode === 'single') {
                       if (modal.kind === 'gold') {
@@ -2172,6 +2748,131 @@ export default function App() {
           </View>
         </Modal>
 
+        {/* Round-End Results Summary Modal */}
+        {(() => {
+          const isOnlineSummary =
+            screen === 'online_game' && completedOnlineRound !== null && room?.status === 'playing';
+          const isSingleSummary =
+            screen === 'single_game' &&
+            completedSingleRound !== null &&
+            singleGame?.phase === 'playing';
+          const summaryRound = isOnlineSummary
+            ? completedOnlineRound
+            : isSingleSummary
+              ? completedSingleRound
+              : null;
+          const summaryPlayers: Array<{
+            uid: string;
+            name: string;
+            avatarColor?: string;
+            score: number;
+            skipsRemaining?: number;
+          }> = isOnlineSummary && room
+            ? room.playerOrder
+                .map((pid) => players[pid])
+                .filter((p): p is RoomPlayerDoc => Boolean(p))
+                .map((p) => ({
+                  uid: p.uid,
+                  name: p.name,
+                  avatarColor: p.avatarColor,
+                  score: p.score ?? 0,
+                  skipsRemaining: p.skipsRemaining,
+                }))
+            : isSingleSummary && singleGame
+              ? singleGame.players.map((p) => ({
+                  uid: p.id,
+                  name: p.name,
+                  avatarColor: p.avatarColor,
+                  score: p.score ?? 0,
+                }))
+              : [];
+          const sortedSummary = [...summaryPlayers].sort((a, b) => b.score - a.score);
+          const totalRounds = isOnlineSummary && room ? room.roundsCount : singleGame?.roundsCount ?? 1;
+          const gMode = isOnlineSummary && room ? room.gameMode : singleGame?.gameMode ?? 'rounds';
+
+          return (
+            <Modal
+              visible={Boolean(summaryRound)}
+              transparent
+              animationType="fade"
+              onRequestClose={() => {
+                if (isOnlineSummary) setCompletedOnlineRound(null);
+                if (isSingleSummary) setCompletedSingleRound(null);
+              }}
+            >
+              <View style={styles.modalBackdrop}>
+                <View style={styles.modalCard}>
+                  <View style={styles.rowGap}>
+                    <View style={styles.roundTrophyBox}>
+                      <Text style={{ fontSize: 24 }}>🏆</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.cardTitle, dirText]}>
+                        {t.roundSummaryTitle} {summaryRound}
+                      </Text>
+                      <Text style={[styles.mutedSmall, dirText]}>
+                        {gMode === 'all_questions'
+                          ? t.roundSummaryAllQuestionsSub
+                          : `${t.roundSummaryNextLabel}: ${t.roundLabel} ${(summaryRound ?? 0) + 1} ${t.ofLabel} ${totalRounds}`}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <ScrollView style={{ maxHeight: 290 }}>
+                    {sortedSummary.map((p, idx) => (
+                      <View key={p.uid} style={styles.playerRow}>
+                        <View style={[styles.rowGap, { flex: 1 }]}>
+                          <Text
+                            style={[
+                              styles.rankNum,
+                              idx === 0 && { color: '#B45309' },
+                            ]}
+                          >
+                            #{idx + 1}
+                          </Text>
+                          <PlayerAvatar
+                            name={p.name}
+                            paletteId={p.avatarColor}
+                            size="sm"
+                            active={idx === 0}
+                          />
+                          <Text style={styles.playerName} numberOfLines={1}>
+                            {p.name}
+                          </Text>
+                        </View>
+                        <View style={styles.rowGap}>
+                          <Text
+                            style={[
+                              styles.scoreValue,
+                              p.score < 0 ? styles.scoreNegative : styles.scorePositive,
+                            ]}
+                          >
+                            {p.score} {t.pointsUnit}
+                          </Text>
+                          {isOnlineSummary && typeof p.skipsRemaining === 'number' && (
+                            <Text style={styles.mutedSmall}>{p.skipsRemaining}/3</Text>
+                          )}
+                        </View>
+                      </View>
+                    ))}
+                  </ScrollView>
+
+                  <TouchableOpacity
+                    onPress={() => {
+                      hapticTap();
+                      if (isOnlineSummary) setCompletedOnlineRound(null);
+                      if (isSingleSummary) setCompletedSingleRound(null);
+                    }}
+                    style={styles.primaryBtn}
+                  >
+                    <Text style={styles.primaryBtnText}>{t.continueNextRoundBtn}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </Modal>
+          );
+        })()}
+
         {/* Special Card Reward Celebration Modal */}
         <Modal
           visible={Boolean(activeRewardEvent)}
@@ -2182,45 +2883,196 @@ export default function App() {
             if (singleAwardVisible && singleGame) setDismissedSingleAwardNonce(singleGame.turnNonce);
           }}
         >
-          <View style={styles.modalBackdrop}>
-            <View style={[styles.modalCard, styles.rewardCard]}>
-              <Text style={[styles.label, { textAlign: 'center' }]}>
-                {activeRewardEvent?.actorName} · {t.specialCardRewardTitle}
-              </Text>
-              <Text style={[styles.pageTitle, { textAlign: 'center' }]}>
-                {activeRewardCardType === 'gold'
-                  ? t.goldCardName
-                  : activeRewardCardType === 'switch'
-                    ? t.switchCardName
-                    : t.antiSwitchCardName}
-              </Text>
-              <Text style={[styles.mutedText, { textAlign: 'center' }, dirText]}>
-                {activeRewardCardType === 'gold'
-                  ? t.goldCardDesc
-                  : activeRewardCardType === 'switch'
-                    ? t.switchCardDesc
-                    : t.antiSwitchCardDesc}
-              </Text>
-              <Text style={[styles.mutedSmall, { textAlign: 'center' }, dirText]}>
-                {t.specialCardRewardSub}
-              </Text>
-              <TouchableOpacity
-                onPress={() => {
-                  hapticTap();
-                  if (onlineAwardVisible && room) setDismissedOnlineAwardNonce(room.turnNonce);
-                  if (singleAwardVisible && singleGame) {
-                    setDismissedSingleAwardNonce(singleGame.turnNonce);
-                  }
-                }}
-                style={styles.primaryBtn}
-              >
-                <Text style={styles.primaryBtnText}>{t.collectAndContinue}</Text>
-              </TouchableOpacity>
-            </View>
+          <View style={styles.rewardBackdrop}>
+            {singleAwardVisible && !singleRewardRevealed ? (
+              <View style={[styles.modalCard, styles.privacyVaultCard]}>
+                <View style={styles.privacyVaultIconBox}>
+                  <Text style={{ fontSize: 30 }}>🔒</Text>
+                </View>
+                <Text style={[styles.privacyVaultBadge, { textAlign: 'center' }]}>
+                  {t.secretCardPrivateBadge}
+                </Text>
+                <Text style={[styles.privacyVaultTitle, { textAlign: 'center' }]}>
+                  {t.secretCardTapToRevealTitle} {activeRewardEvent?.actorName}
+                </Text>
+                <Text style={[styles.privacyVaultDesc, { textAlign: 'center' }, dirText]}>
+                  {t.secretCardPrivacyHint}
+                </Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    hapticTap();
+                    setSingleRewardRevealed(true);
+                  }}
+                  style={styles.privacyVaultBtn}
+                >
+                  <Text style={styles.privacyVaultBtnText}>👁 {t.secretCardRevealBtn}</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              (() => {
+                const cType = activeRewardCardType ?? 'gold';
+                const theme =
+                  cType === 'gold'
+                    ? {
+                        grad: ['#FFFBEB', '#FEF3C7', '#FDE68A'] as const,
+                        border: '#D97706',
+                        glow: 'rgba(245, 158, 11, 0.52)',
+                        icon: '👑',
+                        titleColor: '#78350F',
+                        accentColor: '#B45309',
+                        btnBg: '#B45309',
+                      }
+                    : cType === 'switch'
+                      ? {
+                          grad: ['#EFF6FF', '#DBEAFE', '#BFDBFE'] as const,
+                          border: '#2563EB',
+                          glow: 'rgba(37, 99, 235, 0.52)',
+                          icon: '⇄',
+                          titleColor: '#1E3A8A',
+                          accentColor: '#1D4ED8',
+                          btnBg: '#1D4ED8',
+                        }
+                      : {
+                          grad: ['#FEF2F2', '#FEE2E2', '#FECACA'] as const,
+                          border: '#DC2626',
+                          glow: 'rgba(220, 38, 38, 0.52)',
+                          icon: '🛡️',
+                          titleColor: '#7F1D1D',
+                          accentColor: '#B91C1C',
+                          btnBg: '#B91C1C',
+                        };
+
+                const spinY = rewardFlipAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: ['160deg', '0deg'],
+                });
+
+                const sparkOffsets = [
+                  { x: -120, y: -110 },
+                  { x: 120, y: -110 },
+                  { x: -145, y: 0 },
+                  { x: 145, y: 0 },
+                  { x: -115, y: 115 },
+                  { x: 115, y: 115 },
+                  { x: 0, y: -145 },
+                  { x: 0, y: 145 },
+                ];
+
+                return (
+                  <View style={{ alignItems: 'center', justifyContent: 'center', width: '100%' }}>
+                    <Animated.View
+                      pointerEvents="none"
+                      style={[
+                        styles.rewardAuraCircle,
+                        {
+                          backgroundColor: theme.glow,
+                          opacity: rewardGlowAnim,
+                          transform: [{ scale: rewardGlowAnim }],
+                        },
+                      ]}
+                    />
+
+                    {sparkOffsets.map((sp, i) => (
+                      <Animated.View
+                        key={`sp-${i}`}
+                        pointerEvents="none"
+                        style={[
+                          styles.rewardSparkParticle,
+                          {
+                            backgroundColor: i % 2 === 0 ? theme.accentColor : '#FDE047',
+                            opacity: rewardBurstAnim.interpolate({
+                              inputRange: [0, 0.7, 1],
+                              outputRange: [1, 1, 0],
+                            }),
+                            transform: [
+                              {
+                                translateX: rewardBurstAnim.interpolate({
+                                  inputRange: [0, 1],
+                                  outputRange: [0, sp.x],
+                                }),
+                              },
+                              {
+                                translateY: rewardBurstAnim.interpolate({
+                                  inputRange: [0, 1],
+                                  outputRange: [0, sp.y],
+                                }),
+                              },
+                              {
+                                scale: rewardBurstAnim.interpolate({
+                                  inputRange: [0, 0.4, 1],
+                                  outputRange: [0.3, 1.3, 0.2],
+                                }),
+                              },
+                            ],
+                          },
+                        ]}
+                      />
+                    ))}
+
+                    <Animated.View
+                      style={{
+                        width: '100%',
+                        transform: [
+                          { perspective: 1000 },
+                          { scale: rewardScaleAnim },
+                          { rotateY: spinY },
+                        ],
+                      }}
+                    >
+                      <LinearGradient
+                        colors={theme.grad}
+                        style={[styles.modalCard, { borderColor: theme.border, borderWidth: 2.5, alignItems: 'center' }]}
+                      >
+                        <View style={styles.secretBadgeBox}>
+                          <Text style={styles.secretBadgeText}>🔒 {t.secretCardPrivateBadge}</Text>
+                        </View>
+
+                        <View style={[styles.rewardIconTile, { backgroundColor: theme.btnBg }]}>
+                          <Text style={{ fontSize: 34, color: '#FFFDF9' }}>{theme.icon}</Text>
+                        </View>
+
+                        <Text style={[styles.label, { color: theme.accentColor, textAlign: 'center' }]}>
+                          {activeRewardEvent?.actorName} · {t.specialCardRewardTitle}
+                        </Text>
+                        <Text style={[styles.pageTitle, { color: theme.titleColor, textAlign: 'center' }]}>
+                          {cType === 'gold'
+                            ? t.goldCardName
+                            : cType === 'switch'
+                              ? t.switchCardName
+                              : t.antiSwitchCardName}
+                        </Text>
+                        <Text style={[styles.mutedText, { textAlign: 'center', color: '#3A2C24' }, dirText]}>
+                          {cType === 'gold'
+                            ? t.goldCardDesc
+                            : cType === 'switch'
+                              ? t.switchCardDesc
+                              : t.antiSwitchCardDesc}
+                        </Text>
+                        <Text style={[styles.mutedSmall, { textAlign: 'center', color: '#5E4F43' }, dirText]}>
+                          {t.specialCardRewardSub}
+                        </Text>
+                        <TouchableOpacity
+                          onPress={() => {
+                            hapticTap();
+                            if (onlineAwardVisible && room) setDismissedOnlineAwardNonce(room.turnNonce);
+                            if (singleAwardVisible && singleGame) {
+                              setDismissedSingleAwardNonce(singleGame.turnNonce);
+                            }
+                          }}
+                          style={[styles.primaryBtn, { width: '100%', backgroundColor: theme.btnBg }]}
+                        >
+                          <Text style={styles.primaryBtnText}>{t.collectAndContinue}</Text>
+                        </TouchableOpacity>
+                      </LinearGradient>
+                    </Animated.View>
+                  </View>
+                );
+              })()
+            )}
           </View>
         </Modal>
 
-        {/* Room & Single Phone Chat, Personal Stickers & Emoji Picker Modal */}
+        {/* Room & Single Phone Chat, Voice Notes, Replies & Reactions Modal */}
         <MobileChatModal
           visible={chatOpen}
           onClose={() => setChatOpen(false)}
@@ -2235,11 +3087,57 @@ export default function App() {
           spSenderId={spChatSenderId}
           onChangeSpSender={setSpChatSenderId}
           onlineMessages={chatMessages}
-          onlineMyStickers={onlineMyStickers}
+          onlinePlayers={players}
+          onlineReactions={onlineReactions}
+          chatPresence={chatPresence}
           spState={spChatState}
           onUpdateSpState={(updater) => setSpChatState((prev) => updater(prev))}
           onHapticTap={hapticTap}
         />
+
+        {(() => {
+          let pickerName = displayName || 'Player';
+          let pickerInitial = displayAvatar;
+          if (avatarPickerTarget?.kind === 'online_lobby') {
+            pickerName = players[myUid]?.name ?? displayName ?? 'Player';
+            pickerInitial = players[myUid]?.avatarColor ?? displayAvatar;
+          } else if (avatarPickerTarget?.kind === 'single_player') {
+            const targetSp = singlePlayers.find((pl) => pl.id === avatarPickerTarget.playerId);
+            pickerName = targetSp?.name ?? 'Player';
+            pickerInitial = targetSp?.avatarColor ?? pickDefaultAvatar(1);
+          }
+
+          return (
+            <AvatarPickerModal
+              visible={Boolean(avatarPickerTarget)}
+              playerName={pickerName}
+              initialAvatar={pickerInitial}
+              t={t}
+              isRTL={isRTL}
+              onClose={() => setAvatarPickerTarget(null)}
+              onHapticTap={hapticTap}
+              onSave={async (nextAvatar) => {
+                if (!avatarPickerTarget) return;
+                if (avatarPickerTarget.kind === 'online_entry') {
+                  setDisplayAvatar(nextAvatar);
+                  await savePlayerAvatar(nextAvatar);
+                } else if (avatarPickerTarget.kind === 'online_lobby' && room) {
+                  setDisplayAvatar(nextAvatar);
+                  try {
+                    await updateMyLobbyAvatar(room.roomCode, nextAvatar);
+                  } catch (err) {
+                    setErrorMsg(formatMultiplayerError(err, t));
+                  }
+                } else if (avatarPickerTarget.kind === 'single_player') {
+                  const targetId = avatarPickerTarget.playerId;
+                  setSinglePlayers((prev) =>
+                    prev.map((pl) => (pl.id === targetId ? { ...pl, avatarColor: nextAvatar } : pl))
+                  );
+                }
+              }}
+            />
+          );
+        })()}
       </SafeAreaView>
     </SafeAreaProvider>
   );
@@ -2354,10 +3252,18 @@ const styles = StyleSheet.create({
   },
   cardTitle: { color: '#231A15', fontSize: 17, fontWeight: '700' },
   label: { color: '#8B5E3C', fontSize: 13, fontWeight: '700' },
+  avatarLinkText: { color: '#8B5E3C', fontSize: 12, fontWeight: '700' },
   mutedText: { color: '#5E4F43', fontSize: 14, lineHeight: 21 },
   mutedSmall: { color: '#7A6A5B', fontSize: 12 },
   warnText: { color: '#8C6820', fontSize: 13, fontWeight: '700' },
   errorText: { color: '#9B3B30', fontSize: 13, fontWeight: '700' },
+  errorBanner: {
+    borderRadius: 14,
+    padding: 12,
+    backgroundColor: '#F9EAE6',
+    borderWidth: 1,
+    borderColor: '#C88172',
+  },
   input: {
     minHeight: 48,
     borderRadius: 16,
@@ -2554,73 +3460,104 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   inventoryHeader: { color: '#8B5E3C', fontSize: 13, fontWeight: '800' },
+  privacyRevealBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: '#231A15',
+  },
+  privacyRevealText: { color: '#FBF7F0', fontSize: 12, fontWeight: '800' },
+  privacyToggleBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+    backgroundColor: '#EFE6D6',
+    borderWidth: 1,
+    borderColor: '#D5C7B2',
+  },
+  privacyToggleText: { color: '#231A15', fontSize: 11, fontWeight: '800' },
   cardChip: {
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 12,
-    borderWidth: 1,
+    borderWidth: 1.5,
   },
   chipIdle: {
     backgroundColor: '#F6EFE3',
     borderColor: '#E5DAC8',
   },
   goldChipActive: {
-    backgroundColor: '#FBF5E4',
-    borderColor: '#C7A355',
+    backgroundColor: '#FEF3C7',
+    borderColor: '#D97706',
   },
+  goldChipPassive: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#F59E0B',
+  },
+  goldChipText: { color: '#78350F' },
   switchChipActive: {
-    backgroundColor: '#EFECE4',
-    borderColor: '#8D8879',
+    backgroundColor: '#DBEAFE',
+    borderColor: '#2563EB',
   },
+  switchChipPassive: {
+    backgroundColor: '#EFF6FF',
+    borderColor: '#3B82F6',
+  },
+  switchChipText: { color: '#1E3A8A' },
   antiChipActive: {
-    backgroundColor: '#F9EAE6',
-    borderColor: '#B45E4D',
+    backgroundColor: '#FEE2E2',
+    borderColor: '#DC2626',
   },
-  disabledChip: { opacity: 0.55 },
-  cardChipText: { color: '#231A15', fontSize: 12, fontWeight: '700' },
+  antiChipPassive: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#EF4444',
+  },
+  antiChipText: { color: '#7F1D1D' },
+  disabledChip: { opacity: 0.5 },
+  cardChipText: { color: '#231A15', fontSize: 12, fontWeight: '800' },
   eventBanner: {
     borderRadius: 14,
     padding: 10,
     backgroundColor: '#F3EBDD',
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: '#D5C7B2',
   },
-  eventBannerText: { color: '#231A15', fontSize: 13, fontWeight: '700' },
+  eventBannerText: { color: '#231A15', fontSize: 13, fontWeight: '800' },
   warnBanner: {
     borderRadius: 14,
     padding: 10,
-    backgroundColor: '#FBF5E4',
+    backgroundColor: '#FEF3C7',
     borderWidth: 1,
-    borderColor: '#C7A355',
+    borderColor: '#D97706',
   },
-  warnBannerText: { color: '#7D5D18', fontSize: 13, fontWeight: '700' },
+  warnBannerText: { color: '#78350F', fontSize: 13, fontWeight: '700' },
   switchNotice: {
     borderRadius: 14,
     padding: 10,
-    backgroundColor: '#EFECE4',
-    borderWidth: 1,
-    borderColor: '#A8A294',
+    backgroundColor: '#DBEAFE',
+    borderWidth: 1.5,
+    borderColor: '#2563EB',
   },
-  switchNoticeText: { color: '#4A463B', fontSize: 13, fontWeight: '700' },
+  switchNoticeText: { color: '#1E3A8A', fontSize: 13, fontWeight: '800' },
   forcedNotice: {
     borderRadius: 14,
     padding: 10,
-    backgroundColor: '#F9EAE6',
-    borderWidth: 1,
-    borderColor: '#C88172',
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1.5,
+    borderColor: '#DC2626',
   },
-  forcedNoticeText: { color: '#843B2E', fontSize: 13, fontWeight: '700' },
+  forcedNoticeText: { color: '#7F1D1D', fontSize: 13, fontWeight: '800' },
   antiDefendBtn: {
     minHeight: 50,
     borderRadius: 16,
     paddingHorizontal: 14,
-    backgroundColor: '#F9EAE6',
-    borderWidth: 1.5,
-    borderColor: '#B45E4D',
+    backgroundColor: '#FEE2E2',
+    borderWidth: 2,
+    borderColor: '#DC2626',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  antiDefendBtnText: { color: '#843B2E', fontSize: 13, fontWeight: '800' },
+  antiDefendBtnText: { color: '#7F1D1D', fontSize: 13, fontWeight: '800' },
   voiceTitle: { color: '#5E4F43', fontSize: 13, fontWeight: '700' },
   voiceJoinBtn: {
     paddingHorizontal: 12,
@@ -2667,6 +3604,20 @@ const styles = StyleSheet.create({
     borderColor: '#D5C7B2',
   },
   chatToggleText: { color: '#231A15', fontSize: 12, fontWeight: '700' },
+  chatActivityBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: '#EEF3EC',
+    borderWidth: 1,
+    borderColor: '#B9CEB3',
+  },
+  chatActivityRecBadge: {
+    backgroundColor: '#FEE2E2',
+    borderColor: '#FCA5A5',
+  },
+  chatActivityText: { color: '#355432', fontSize: 10, fontWeight: '800' },
+  chatActivityRecText: { color: '#B91C1C' },
   unreadBadge: {
     minWidth: 18,
     height: 18,
@@ -2694,6 +3645,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 18,
   },
+  rewardBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(25,18,14,0.78)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 18,
+  },
   modalCard: {
     borderRadius: 24,
     padding: 20,
@@ -2701,6 +3659,79 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#D5C7B2',
     gap: 14,
+  },
+  roundTrophyBox: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1.5,
+    borderColor: '#D97706',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rankNum: {
+    width: 28,
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#8B5E3C',
+  },
+  privacyVaultCard: {
+    backgroundColor: '#231A15',
+    borderColor: '#D7BD7B',
+    alignItems: 'center',
+    width: '100%',
+  },
+  privacyVaultIconBox: {
+    width: 64,
+    height: 64,
+    borderRadius: 20,
+    backgroundColor: '#3A2C24',
+    borderWidth: 1.5,
+    borderColor: '#D7BD7B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  privacyVaultBadge: { color: '#D7BD7B', fontSize: 12, fontWeight: '800' },
+  privacyVaultTitle: { color: '#FFFDF9', fontSize: 22, fontWeight: '800' },
+  privacyVaultDesc: { color: '#DDD2C0', fontSize: 14, lineHeight: 20 },
+  privacyVaultBtn: {
+    width: '100%',
+    minHeight: 52,
+    borderRadius: 16,
+    backgroundColor: '#F59E0B',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+  },
+  privacyVaultBtnText: { color: '#231A15', fontSize: 15, fontWeight: '800' },
+  rewardAuraCircle: {
+    position: 'absolute',
+    width: 280,
+    height: 280,
+    borderRadius: 140,
+  },
+  rewardSparkParticle: {
+    position: 'absolute',
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  secretBadgeBox: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.82)',
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.08)',
+  },
+  secretBadgeText: { color: '#231A15', fontSize: 11, fontWeight: '800' },
+  rewardIconTile: {
+    width: 72,
+    height: 72,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   rewardCard: {
     borderColor: '#C7A355',

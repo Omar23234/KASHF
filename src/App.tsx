@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { pickAvatarPalette } from './config/brand';
+import { pickDefaultAvatar } from './config/brand';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { HomeScreen } from './components/HomeScreen';
 import { HowToPlayScreen } from './components/HowToPlayScreen';
@@ -11,6 +11,7 @@ import { SettingsScreen } from './components/SettingsScreen';
 import { SinglePhoneGameScreen } from './components/SinglePhoneGameScreen';
 import { SinglePhoneSetupScreen } from './components/SinglePhoneSetupScreen';
 import { AppProvider, useApp } from './context/AppContext';
+import { VoiceProvider, useVoiceChat } from './context/VoiceContext';
 import { getMaxRoundsForPlayers, leaveMultiplayerRoom } from './firebase/multiplayerService';
 import type { GameLengthMode, SinglePhoneGameState, SinglePhonePlayer } from './types/game';
 import { soundFX } from './utils/sound';
@@ -35,15 +36,16 @@ function loadInitialSinglePlayers(): SinglePhonePlayer[] {
     // ignore
   }
   return [
-    { id: 'sp-1', name: 'أحمد', avatarColor: pickAvatarPalette(1) },
-    { id: 'sp-2', name: 'محمد', avatarColor: pickAvatarPalette(2) },
-    { id: 'sp-3', name: 'عمر', avatarColor: pickAvatarPalette(3) },
-    { id: 'sp-4', name: 'علي', avatarColor: pickAvatarPalette(4) },
+    { id: 'sp-1', name: 'أحمد', avatarColor: pickDefaultAvatar(1) },
+    { id: 'sp-2', name: 'محمد', avatarColor: pickDefaultAvatar(2) },
+    { id: 'sp-3', name: 'عمر', avatarColor: pickDefaultAvatar(3) },
+    { id: 'sp-4', name: 'علي', avatarColor: pickDefaultAvatar(4) },
   ];
 }
 
 const AppContent: React.FC = () => {
   const { screen, setScreen, activeRoomCode, setActiveRoomCode, soundEnabled, t } = useApp();
+  const voice = useVoiceChat();
   const [deepLinkRoomCode, setDeepLinkRoomCode] = useState<string>('');
 
   const [singlePlayers, setSinglePlayers] = useState<SinglePhonePlayer[]>(loadInitialSinglePlayers);
@@ -116,6 +118,9 @@ const AppContent: React.FC = () => {
 
   const handleBack = () => {
     if (screen === 'online_lobby' || screen === 'online_game') {
+      void voice.leaveVoice().finally(() => {
+        voice.clearVoiceRoomMeta();
+      });
       if (activeRoomCode) {
         void leaveMultiplayerRoom(activeRoomCode);
         setActiveRoomCode(null);
@@ -175,7 +180,9 @@ export default function App() {
   return (
     <ErrorBoundary onReset={() => window.location.assign('/')}>
       <AppProvider>
-        <AppContent />
+        <VoiceProvider>
+          <AppContent />
+        </VoiceProvider>
       </AppProvider>
     </ErrorBoundary>
   );

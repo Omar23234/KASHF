@@ -17,18 +17,18 @@ import {
   type Unsubscribe,
 } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth';
-import { getDownloadURL, ref as storageRef, uploadBytes } from 'firebase/storage';
-import { auth, db, handleFirestoreError, OperationType, storage } from './config';
-import { pickAvatarPalette } from '../config/brand';
+import { auth, db, handleFirestoreError, OperationType } from './config';
+import { pickDefaultAvatar } from '../config/brand';
 import { drawRandomUnusedQuestionId, shuffleArray, TOTAL_QUESTIONS_COUNT } from '../data/questions';
 import type { Language } from '../i18n/translations';
 import type {
+  ChatPresenceStatus,
   ChatReplyReference,
   GameLengthMode,
   MessageReactionDoc,
-  PersonalSticker,
   ReactionEmoji,
   RoomChatMessage,
+  RoomChatPresenceDoc,
   RoomDoc,
   RoomPlayerDoc,
   VoiceSignalDoc,
@@ -41,6 +41,7 @@ import {
 const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const ACTIVE_ROOM_STORAGE_KEY = 'kashf_active_room_code';
 const PLAYER_NAME_STORAGE_KEY = 'kashf_player_name';
+const PLAYER_AVATAR_STORAGE_KEY = 'kashf_player_avatar';
 
 export function getMaxRoundsForPlayers(playerCount: number): number {
   const safePlayers = Math.max(2, playerCount);
@@ -78,6 +79,22 @@ export function getSavedPlayerName(): string {
 export function savePlayerName(name: string): void {
   try {
     localStorage.setItem(PLAYER_NAME_STORAGE_KEY, name);
+  } catch {
+    // ignore
+  }
+}
+
+export function getSavedPlayerAvatar(): string {
+  try {
+    return localStorage.getItem(PLAYER_AVATAR_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+export function savePlayerAvatar(avatar: string): void {
+  try {
+    localStorage.setItem(PLAYER_AVATAR_STORAGE_KEY, avatar.slice(0, 24));
   } catch {
     // ignore
   }
@@ -137,6 +154,7 @@ async function generateUniqueRoomCode(): Promise<string> {
 
 export async function createMultiplayerRoom(params: {
   hostName: string;
+  avatarColor?: string;
   language: Language;
   gameMode: GameLengthMode;
   roundsCount: number;
@@ -149,7 +167,11 @@ export async function createMultiplayerRoom(params: {
   const cleanName = params.hostName.trim().slice(0, 24);
   if (!cleanName) throw new Error('INVALID_NAME');
 
+  const chosenAvatar = (params.avatarColor || getSavedPlayerAvatar() || pickDefaultAvatar(user.uid))
+    .trim()
+    .slice(0, 24);
   savePlayerName(cleanName);
+  savePlayerAvatar(chosenAvatar);
   const roomCode = await generateUniqueRoomCode();
   const roomRef = doc(db, 'rooms', roomCode);
   const playerRef = doc(db, 'rooms', roomCode, 'players', user.uid);
@@ -194,7 +216,7 @@ export async function createMultiplayerRoom(params: {
   batch.set(playerRef, {
     uid: user.uid,
     name: cleanName,
-    avatarColor: pickAvatarPalette(user.uid),
+    avatarColor: chosenAvatar,
     isHost: true,
     score: 0,
     skipsRemaining: 3,
@@ -224,6 +246,7 @@ export async function createMultiplayerRoom(params: {
 export async function joinMultiplayerRoom(params: {
   rawCode: string;
   playerName: string;
+  avatarColor?: string;
 }): Promise<{ roomCode: string; reconnected: boolean }> {
   const user = auth.currentUser;
   if (!user) throw new Error('AUTH_REQUIRED');
@@ -235,7 +258,11 @@ export async function joinMultiplayerRoom(params: {
 
   const cleanName = params.playerName.trim().slice(0, 24);
   if (!cleanName) throw new Error('INVALID_NAME');
+  const chosenAvatar = (params.avatarColor || getSavedPlayerAvatar() || pickDefaultAvatar(user.uid))
+    .trim()
+    .slice(0, 24);
   savePlayerName(cleanName);
+  savePlayerAvatar(chosenAvatar);
 
   const roomRef = doc(db, 'rooms', roomCode);
   const playerRef = doc(db, 'rooms', roomCode, 'players', user.uid);
@@ -285,7 +312,7 @@ export async function joinMultiplayerRoom(params: {
       tx.set(playerRef, {
         uid: user.uid,
         name: cleanName,
-        avatarColor: pickAvatarPalette(user.uid),
+        avatarColor: chosenAvatar,
         isHost: false,
         score: 0,
         skipsRemaining: 3,
@@ -336,6 +363,23 @@ export async function updateLobbySettings(
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomCode}`);
+  }
+}
+
+export async function updateMyLobbyAvatar(roomCode: string, avatarColor: string): Promise<void> {
+  const user = auth.currentUser;
+  if (!user) throw new Error('AUTH_REQUIRED');
+  const cleanAvatar = avatarColor.trim().slice(0, 24);
+  if (!cleanAvatar) return;
+  savePlayerAvatar(cleanAvatar);
+  const playerRef = doc(db, 'rooms', roomCode, 'players', user.uid);
+  try {
+    await updateDoc(playerRef, {
+      avatarColor: cleanAvatar,
+      lastSeenAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomCode}/players/${user.uid}`);
   }
 }
 
@@ -1300,51 +1344,17 @@ export function subscribeToRoomMessages(
   );
 }
 
-export async function sendRoomStickerMessage(
-  roomCode: string,
-  senderName: string,
-  sticker: PersonalSticker,
-  memberIds: string[],
-  replyTo?: ChatReplyReference | null
-): Promise<void> {
-  const user = auth.currentUser;
-  if (!user) throw new Error('AUTH_REQUIRED');
-  if (!sticker.imageUrl.startsWith('https://')) {
-    throw new Error('INVALID_STICKER_URL');
+const MAX_INLINE_VOICE_BYTES = 480 * 1024;
+const MAX_INLINE_VOICE_DATA_URI_CHARS = 700000;
+
+async function blobToBase64Data(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
-
-  const cleanName = (senderName || 'Player').trim().slice(0, 24) || 'Player';
-  const cleanCreatorName = (sticker.creatorName || cleanName).trim().slice(0, 24) || 'Player';
-  const safeMembers = Array.from(new Set([user.uid, ...memberIds])).slice(0, 12);
-
-  try {
-    await addDoc(collection(db, 'rooms', roomCode, 'messages'), {
-      senderId: user.uid,
-      senderName: cleanName,
-      text: '[Sticker]',
-      memberIds: safeMembers,
-      messageType: 'sticker',
-      stickerId: sticker.stickerId,
-      stickerUrl: sticker.imageUrl,
-      stickerStoragePath: sticker.storagePath,
-      stickerCreatorId: sticker.creatorUid,
-      stickerCreatorName: cleanCreatorName,
-      stickerContentHash: sticker.contentHash,
-      ...buildReplyPayload(replyTo),
-      createdAt: serverTimestamp(),
-    });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, `rooms/${roomCode}/messages`);
-  }
-}
-
-function getAudioExtensionFromMime(mimeType: string): string {
-  const lower = mimeType.toLowerCase();
-  if (lower.includes('mp4') || lower.includes('m4a')) return 'm4a';
-  if (lower.includes('ogg') || lower.includes('opus')) return 'ogg';
-  if (lower.includes('mpeg') || lower.includes('mp3')) return 'mp3';
-  if (lower.includes('wav')) return 'wav';
-  return 'webm';
+  return btoa(binary);
 }
 
 export async function uploadAndSendVoiceMessage(params: {
@@ -1359,43 +1369,28 @@ export async function uploadAndSendVoiceMessage(params: {
   const user = auth.currentUser;
   if (!user) throw new Error('AUTH_REQUIRED');
 
-  const safeMime = (params.mimeType || params.blob.type || 'audio/webm').split(';')[0].trim();
-  if (!safeMime.startsWith('audio/')) {
-    throw new Error('VOICE_INVALID_FORMAT');
+  const rawMime = (params.mimeType || params.blob.type || 'audio/webm').split(';')[0].trim().toLowerCase();
+  const safeMime = rawMime.startsWith('audio/') ? rawMime : 'audio/webm';
+  if (params.blob.size < 64) {
+    throw new Error('VOICE_UPLOAD_FAILED');
   }
-  if (params.blob.size > 5 * 1024 * 1024) {
+  if (params.blob.size > MAX_INLINE_VOICE_BYTES) {
     throw new Error('VOICE_TOO_LARGE');
   }
 
-  const safeDuration = Math.min(300, Math.max(1, Math.round(params.durationSec)));
-  const ext = getAudioExtensionFromMime(safeMime);
-  const voiceId = `voc_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const path = `voiceMessages/${params.roomCode}/${user.uid}/${voiceId}.${ext}`;
-  const fileRef = storageRef(storage, path);
-
-  let downloadUrl = '';
+  let base64Body = '';
   try {
-    await uploadBytes(fileRef, params.blob, {
-      contentType: safeMime,
-      cacheControl: 'public,max-age=604800',
-    });
-    downloadUrl = await getDownloadURL(fileRef);
-  } catch (err: unknown) {
-    const code = (err as { code?: string })?.code ?? '';
-    const msg = err instanceof Error ? err.message : String(err);
-    if (
-      code === 'storage/bucket-not-found' ||
-      code === 'storage/project-not-found' ||
-      code === 'storage/unauthorized' ||
-      code === 'storage/unknown' ||
-      msg.includes('404') ||
-      msg.includes('Not Found')
-    ) {
-      throw new Error('VOICE_STORAGE_UNAVAILABLE');
-    }
+    base64Body = (await blobToBase64Data(params.blob)).replace(/\s+/g, '');
+  } catch {
     throw new Error('VOICE_UPLOAD_FAILED');
   }
 
+  const audioDataUrl = `data:${safeMime};base64,${base64Body}`;
+  if (audioDataUrl.length < 30 || audioDataUrl.length > MAX_INLINE_VOICE_DATA_URI_CHARS) {
+    throw new Error('VOICE_TOO_LARGE');
+  }
+
+  const safeDuration = Math.min(180, Math.max(1, Math.round(params.durationSec)));
   const cleanName = (params.senderName || 'Player').trim().slice(0, 24) || 'Player';
   const safeMembers = Array.from(new Set([user.uid, ...params.memberIds])).slice(0, 12);
 
@@ -1406,8 +1401,8 @@ export async function uploadAndSendVoiceMessage(params: {
       text: `[Voice ${safeDuration}s]`,
       memberIds: safeMembers,
       messageType: 'voice',
-      audioUrl: downloadUrl,
-      audioStoragePath: path,
+      audioUrl: audioDataUrl,
+      audioStoragePath: 'inline',
       audioDurationSec: safeDuration,
       audioMimeType: safeMime,
       ...buildReplyPayload(params.replyTo),
@@ -1485,29 +1480,52 @@ export function subscribeToRoomReactions(
   );
 }
 
-export function subscribeToMyStickers(
+export async function setRoomChatPresence(params: {
+  roomCode: string;
+  senderName: string;
+  status: ChatPresenceStatus;
+  memberIds: string[];
+}): Promise<void> {
+  const user = auth.currentUser;
+  if (!user || !params.roomCode) return;
+
+  const cleanName = (params.senderName || 'Player').trim().slice(0, 24) || 'Player';
+  const safeMembers = Array.from(new Set([user.uid, ...params.memberIds])).slice(0, 12);
+  const ref = doc(db, 'rooms', params.roomCode, 'chatPresence', user.uid);
+
+  try {
+    await setDoc(ref, {
+      uid: user.uid,
+      name: cleanName,
+      status: params.status,
+      memberIds: safeMembers,
+      expiresAtMs: params.status === 'idle' ? 0 : Date.now() + 6500,
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // Ephemeral typing/recording status is best-effort
+  }
+}
+
+export function subscribeToRoomChatPresence(
+  roomCode: string,
   myUid: string,
-  onStickers: (stickers: PersonalSticker[]) => void,
+  onPresence: (items: RoomChatPresenceDoc[]) => void,
   onError?: (err: Error) => void
 ): Unsubscribe {
-  if (!myUid) {
-    onStickers([]);
-    return () => {};
-  }
+  if (!myUid || !roomCode) return () => {};
   const q = query(
-    collection(db, 'playerStickers', myUid, 'items'),
-    where('ownerId', '==', myUid)
+    collection(db, 'rooms', roomCode, 'chatPresence'),
+    where('memberIds', 'array-contains', myUid)
   );
   return onSnapshot(
     q,
     (snap) => {
-      const list: PersonalSticker[] = snap.docs.map((d) => d.data() as PersonalSticker);
-      list.sort((a, b) => {
-        const ta = a.createdAt?.toMillis?.() ?? 0;
-        const tb = b.createdAt?.toMillis?.() ?? 0;
-        return tb - ta;
-      });
-      onStickers(list);
+      const list: RoomChatPresenceDoc[] = snap.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as Omit<RoomChatPresenceDoc, 'id'>),
+      }));
+      onPresence(list);
     },
     (err) => {
       if (onError) onError(err);
@@ -1515,141 +1533,7 @@ export function subscribeToMyStickers(
   );
 }
 
-export async function uploadPersonalSticker(params: {
-  blob: Blob;
-  mimeType: string;
-  extension: 'png' | 'webp' | 'jpg';
-  contentHash: string;
-  creatorName: string;
-}): Promise<{ status: 'added' | 'already_exists'; sticker: PersonalSticker }> {
-  const user = auth.currentUser;
-  if (!user) throw new Error('AUTH_REQUIRED');
 
-  const itemsCol = collection(db, 'playerStickers', user.uid, 'items');
-  try {
-    const dupSnap = await getDocs(
-      query(itemsCol, where('ownerId', '==', user.uid), where('contentHash', '==', params.contentHash))
-    );
-    if (!dupSnap.empty) {
-      return {
-        status: 'already_exists',
-        sticker: dupSnap.docs[0].data() as PersonalSticker,
-      };
-    }
-  } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, `playerStickers/${user.uid}/items`);
-  }
-
-  const stickerId = `stk_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const path = `stickers/${user.uid}/${stickerId}.${params.extension}`;
-  const fileRef = storageRef(storage, path);
-
-  let downloadUrl = '';
-  try {
-    await uploadBytes(fileRef, params.blob, {
-      contentType: params.mimeType,
-      cacheControl: 'public,max-age=31536000',
-    });
-    downloadUrl = await getDownloadURL(fileRef);
-  } catch (err: unknown) {
-    const code = (err as { code?: string })?.code ?? '';
-    const msg = err instanceof Error ? err.message : String(err);
-    if (
-      code === 'storage/bucket-not-found' ||
-      code === 'storage/project-not-found' ||
-      code === 'storage/unauthorized' ||
-      code === 'storage/unknown' ||
-      msg.includes('404') ||
-      msg.includes('Not Found')
-    ) {
-      throw new Error('STICKER_STORAGE_UNAVAILABLE');
-    }
-    throw new Error('STICKER_UPLOAD_FAILED');
-  }
-
-  const cleanCreatorName = (params.creatorName || 'Player').trim().slice(0, 24) || 'Player';
-  const record: PersonalSticker = {
-    stickerId,
-    ownerId: user.uid,
-    creatorUid: user.uid,
-    creatorName: cleanCreatorName,
-    imageUrl: downloadUrl,
-    storagePath: path,
-    contentHash: params.contentHash,
-    isSavedFromOther: false,
-    createdAt: null,
-  };
-
-  try {
-    await setDoc(doc(db, 'playerStickers', user.uid, 'items', stickerId), {
-      ...record,
-      createdAt: serverTimestamp(),
-    });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, `playerStickers/${user.uid}/items/${stickerId}`);
-  }
-
-  return { status: 'added', sticker: record };
-}
-
-export async function saveStickerToMyCollection(params: {
-  stickerId: string;
-  imageUrl: string;
-  storagePath: string;
-  contentHash: string;
-  creatorUid: string;
-  creatorName: string;
-}): Promise<'saved' | 'already_exists'> {
-  const user = auth.currentUser;
-  if (!user) throw new Error('AUTH_REQUIRED');
-  if (!params.imageUrl.startsWith('https://')) {
-    throw new Error('INVALID_STICKER_URL');
-  }
-
-  const targetRef = doc(db, 'playerStickers', user.uid, 'items', params.stickerId);
-  try {
-    const existingIdSnap = await getDoc(targetRef);
-    if (existingIdSnap.exists()) {
-      return 'already_exists';
-    }
-    const dupHashSnap = await getDocs(
-      query(
-        collection(db, 'playerStickers', user.uid, 'items'),
-        where('ownerId', '==', user.uid),
-        where('contentHash', '==', params.contentHash)
-      )
-    );
-    if (!dupHashSnap.empty) {
-      return 'already_exists';
-    }
-
-    const cleanCreatorName = (params.creatorName || 'Player').trim().slice(0, 24) || 'Player';
-    await setDoc(targetRef, {
-      stickerId: params.stickerId,
-      ownerId: user.uid,
-      creatorUid: params.creatorUid,
-      creatorName: cleanCreatorName,
-      imageUrl: params.imageUrl,
-      storagePath: params.storagePath,
-      contentHash: params.contentHash,
-      isSavedFromOther: params.creatorUid !== user.uid,
-      createdAt: serverTimestamp(),
-    });
-    return 'saved';
-  } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, `playerStickers/${user.uid}/items/${params.stickerId}`);
-  }
-}
-
-export async function deletePersonalSticker(stickerId: string): Promise<void> {
-  const user = auth.currentUser;
-  if (!user) return;
-  try {
-    await deleteDoc(doc(db, 'playerStickers', user.uid, 'items', stickerId));
-  } catch (error) {
-    handleFirestoreError(error, OperationType.DELETE, `playerStickers/${user.uid}/items/${stickerId}`);
-  }
-}
 
 export async function sendVoiceSignal(
   roomCode: string,

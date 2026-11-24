@@ -12,6 +12,8 @@ const RTC_CONFIG: RTCConfiguration = {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
   ],
 };
 
@@ -27,13 +29,17 @@ export function useWebRTCVoiceChat(params: {
   const [voiceJoined, setVoiceJoined] = useState(false);
   const [micMuted, setMicMuted] = useState(false);
   const [voiceError, setVoiceError] = useState<VoiceErrorType>('');
+  const [audioBlocked, setAudioBlocked] = useState(false);
   const [speakingUids, setSpeakingUids] = useState<Record<string, boolean>>({});
 
   const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteStreamsRef = useRef<Map<string, MediaStream>>(new Map());
   const peersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const audioElsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   const pendingIceRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const handledSignalsRef = useRef<Set<string>>(new Set());
+  const makingOfferRef = useRef<Set<string>>(new Set());
+  const joinTimestampMsRef = useRef<number>(0);
   const analysersRef = useRef<
     Map<string, { analyser: AnalyserNode; source: MediaStreamAudioSourceNode; data: Uint8Array<ArrayBuffer> }>
   >(new Map());
@@ -44,13 +50,13 @@ export function useWebRTCVoiceChat(params: {
   voiceJoinedRef.current = voiceJoined;
   micMutedRef.current = micMuted;
 
-  const attachAnalyser = useCallback((uid: string, stream: MediaStream) => {
+  const ensureAudioContextResumed = useCallback(() => {
     try {
-      if (typeof window === 'undefined') return;
+      if (typeof window === 'undefined') return null;
       const AudioCtx =
         window.AudioContext ||
         (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      if (!AudioCtx) return;
+      if (!AudioCtx) return null;
       if (!audioCtxRef.current) {
         audioCtxRef.current = new AudioCtx();
       }
@@ -58,28 +64,41 @@ export function useWebRTCVoiceChat(params: {
       if (ctx.state === 'suspended') {
         ctx.resume().catch(() => {});
       }
-      const existing = analysersRef.current.get(uid);
-      if (existing) {
-        try {
-          existing.source.disconnect();
-        } catch {
-          // ignore
-        }
-      }
-      const source = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 256;
-      source.connect(analyser);
-      const buffer = new ArrayBuffer(analyser.frequencyBinCount);
-      analysersRef.current.set(uid, {
-        analyser,
-        source,
-        data: new Uint8Array(buffer),
-      });
+      return ctx;
     } catch {
-      // Ignore Web Audio analyser failure on restricted devices
+      return null;
     }
   }, []);
+
+  const attachAnalyser = useCallback(
+    (uid: string, stream: MediaStream) => {
+      try {
+        const ctx = ensureAudioContextResumed();
+        if (!ctx) return;
+        const existing = analysersRef.current.get(uid);
+        if (existing) {
+          try {
+            existing.source.disconnect();
+          } catch {
+            // ignore
+          }
+        }
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+        const buffer = new ArrayBuffer(analyser.fftSize);
+        analysersRef.current.set(uid, {
+          analyser,
+          source,
+          data: new Uint8Array(buffer),
+        });
+      } catch {
+        // Ignore Web Audio analyser failure on restricted devices
+      }
+    },
+    [ensureAudioContextResumed]
+  );
 
   const detachAnalyser = useCallback((uid: string) => {
     const entry = analysersRef.current.get(uid);
@@ -99,20 +118,64 @@ export function useWebRTCVoiceChat(params: {
     });
   }, []);
 
+  const tryPlayAudioElement = useCallback((audio: HTMLAudioElement) => {
+    audio.muted = false;
+    audio.volume = 1;
+    audio.play()
+      .then(() => {
+        setAudioBlocked(false);
+      })
+      .catch(() => {
+        setAudioBlocked(true);
+      });
+  }, []);
+
+  const unlockAudio = useCallback(() => {
+    ensureAudioContextResumed();
+    let anyStillBlocked = false;
+    for (const audio of audioElsRef.current.values()) {
+      audio.muted = false;
+      audio.volume = 1;
+      audio.play().catch(() => {
+        anyStillBlocked = true;
+      });
+    }
+    if (!anyStillBlocked) {
+      setAudioBlocked(false);
+    }
+  }, [ensureAudioContextResumed]);
+
+  // Automatically unlock blocked remote audio on the next user gesture
+  useEffect(() => {
+    if (!audioBlocked || typeof window === 'undefined') return;
+    const handleUnlock = () => {
+      unlockAudio();
+    };
+    window.addEventListener('pointerdown', handleUnlock, { once: true });
+    window.addEventListener('keydown', handleUnlock, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', handleUnlock);
+      window.removeEventListener('keydown', handleUnlock);
+    };
+  }, [audioBlocked, unlockAudio]);
+
   const closePeer = useCallback(
     (peerUid: string) => {
+      makingOfferRef.current.delete(peerUid);
       const pc = peersRef.current.get(peerUid);
       if (pc) {
         try {
           pc.ontrack = null;
           pc.onicecandidate = null;
           pc.onconnectionstatechange = null;
+          pc.oniceconnectionstatechange = null;
           pc.close();
         } catch {
           // ignore
         }
         peersRef.current.delete(peerUid);
       }
+      remoteStreamsRef.current.delete(peerUid);
       const audioEl = audioElsRef.current.get(peerUid);
       if (audioEl) {
         try {
@@ -133,7 +196,8 @@ export function useWebRTCVoiceChat(params: {
   const createPeerConnection = useCallback(
     (peerUid: string): RTCPeerConnection => {
       const existing = peersRef.current.get(peerUid);
-      if (existing) return existing;
+      if (existing && existing.connectionState !== 'closed') return existing;
+      if (existing) closePeer(peerUid);
 
       const pc = new RTCPeerConnection(RTC_CONFIG);
       peersRef.current.set(peerUid, pc);
@@ -142,6 +206,12 @@ export function useWebRTCVoiceChat(params: {
       if (stream) {
         for (const track of stream.getAudioTracks()) {
           pc.addTrack(track, stream);
+        }
+      } else {
+        try {
+          pc.addTransceiver('audio', { direction: 'recvonly' });
+        } catch {
+          // ignore
         }
       }
 
@@ -158,10 +228,15 @@ export function useWebRTCVoiceChat(params: {
 
       pc.ontrack = (evt) => {
         const remoteStream = evt.streams[0] || new MediaStream([evt.track]);
+        remoteStreamsRef.current.set(peerUid, remoteStream);
+        evt.track.enabled = true;
+
         let audio = audioElsRef.current.get(peerUid);
         if (!audio && typeof document !== 'undefined') {
           audio = document.createElement('audio');
           audio.autoplay = true;
+          audio.muted = false;
+          audio.volume = 1;
           audio.setAttribute('playsinline', 'true');
           audio.style.display = 'none';
           document.body.appendChild(audio);
@@ -169,25 +244,68 @@ export function useWebRTCVoiceChat(params: {
         }
         if (audio) {
           audio.srcObject = remoteStream;
-          audio.play().catch(() => {});
+          tryPlayAudioElement(audio);
         }
+        evt.track.onunmute = () => {
+          const el = audioElsRef.current.get(peerUid);
+          if (el) {
+            tryPlayAudioElement(el);
+          }
+        };
         attachAnalyser(peerUid, remoteStream);
       };
 
+      let iceRestartAttempted = false;
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        if (pc.connectionState === 'failed') {
+          if (!iceRestartAttempted && typeof pc.restartIce === 'function') {
+            iceRestartAttempted = true;
+            try {
+              pc.restartIce();
+              return;
+            } catch {
+              // fall through to close
+            }
+          }
+          closePeer(peerUid);
+        } else if (pc.connectionState === 'closed') {
           closePeer(peerUid);
         }
       };
 
       return pc;
     },
-    [attachAnalyser, closePeer, roomCode]
+    [attachAnalyser, closePeer, roomCode, tryPlayAudioElement]
+  );
+
+  const sendOfferToPeer = useCallback(
+    async (peerUid: string, pc: RTCPeerConnection) => {
+      if (!roomCode || makingOfferRef.current.has(peerUid)) return;
+      makingOfferRef.current.add(peerUid);
+      try {
+        const offer = await pc.createOffer({ offerToReceiveAudio: true });
+        await pc.setLocalDescription(offer);
+        if (pc.localDescription) {
+          await sendVoiceSignal(
+            roomCode,
+            peerUid,
+            'offer',
+            JSON.stringify(pc.localDescription.toJSON())
+          );
+        }
+      } catch {
+        // ignore transient offer error; reconciliation loop will retry
+      } finally {
+        makingOfferRef.current.delete(peerUid);
+      }
+    },
+    [roomCode]
   );
 
   const leaveVoice = useCallback(async () => {
     setVoiceJoined(false);
     setMicMuted(false);
+    setAudioBlocked(false);
     voiceJoinedRef.current = false;
     micMutedRef.current = false;
 
@@ -211,6 +329,7 @@ export function useWebRTCVoiceChat(params: {
   const joinVoice = useCallback(async () => {
     if (!roomCode || !myUid) return;
     setVoiceError('');
+    setAudioBlocked(false);
     if (
       typeof navigator === 'undefined' ||
       !navigator.mediaDevices?.getUserMedia ||
@@ -219,6 +338,11 @@ export function useWebRTCVoiceChat(params: {
       setVoiceError('not_supported');
       return;
     }
+
+    // Unlock audio context synchronously within the click user-gesture
+    ensureAudioContextResumed();
+    joinTimestampMsRef.current = Date.now();
+    handledSignalsRef.current.clear();
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -247,7 +371,7 @@ export function useWebRTCVoiceChat(params: {
         setVoiceError('permission_denied');
       }
     }
-  }, [attachAnalyser, myUid, roomCode]);
+  }, [attachAnalyser, ensureAudioContextResumed, myUid, roomCode]);
 
   const toggleMute = useCallback(async () => {
     if (!voiceJoinedRef.current || !roomCode) return;
@@ -262,44 +386,66 @@ export function useWebRTCVoiceChat(params: {
     await setPlayerVoiceState(roomCode, true, nextMuted);
   }, [roomCode]);
 
-  // Maintain peer mesh with voiceJoined peers
+  // If room changes/leaves while voice is still marked joined, clean up stale session
+  const prevRoomCodeRef = useRef<string | null>(roomCode);
+  useEffect(() => {
+    const prev = prevRoomCodeRef.current;
+    prevRoomCodeRef.current = roomCode;
+    if (prev && prev !== roomCode && voiceJoinedRef.current) {
+      setVoiceJoined(false);
+      setMicMuted(false);
+      setAudioBlocked(false);
+      voiceJoinedRef.current = false;
+      micMutedRef.current = false;
+      for (const peerUid of Array.from(peersRef.current.keys())) {
+        closePeer(peerUid);
+      }
+      if (localStreamRef.current) {
+        for (const t of localStreamRef.current.getTracks()) t.stop();
+        localStreamRef.current = null;
+      }
+      if (myUid) detachAnalyser(myUid);
+    }
+  }, [closePeer, detachAnalyser, myUid, roomCode]);
+
+  // Maintain peer mesh with voiceJoined peers + periodic recovery check
   useEffect(() => {
     if (!voiceJoined || !roomCode || !myUid) return;
 
-    const activeVoicePeers = new Set(
-      playerOrder.filter((pid) => pid !== myUid && players[pid]?.voiceJoined)
-    );
+    const reconcileMesh = () => {
+      const activeVoicePeers = new Set(
+        playerOrder.filter((pid) => pid !== myUid && players[pid]?.voiceJoined)
+      );
 
-    for (const existingPeer of Array.from(peersRef.current.keys())) {
-      if (!activeVoicePeers.has(existingPeer)) {
-        closePeer(existingPeer);
+      for (const existingPeer of Array.from(peersRef.current.keys())) {
+        if (!activeVoicePeers.has(existingPeer)) {
+          closePeer(existingPeer);
+        }
       }
-    }
 
-    for (const peerUid of activeVoicePeers) {
-      if (!peersRef.current.has(peerUid) && myUid < peerUid) {
-        const pc = createPeerConnection(peerUid);
-        void (async () => {
-          try {
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            if (pc.localDescription) {
-              await sendVoiceSignal(
-                roomCode,
-                peerUid,
-                'offer',
-                JSON.stringify(pc.localDescription.toJSON())
-              );
-            }
-          } catch {
-            // ignore transient offer error
-          }
-        })();
+      for (const peerUid of activeVoicePeers) {
+        if (!peersRef.current.has(peerUid) && myUid < peerUid) {
+          const pc = createPeerConnection(peerUid);
+          void sendOfferToPeer(peerUid, pc);
+        }
       }
-    }
-  }, [closePeer, createPeerConnection, myUid, playerOrder, players, roomCode, voiceJoined]);
+    };
 
-  // Listen for incoming WebRTC signaling packets
+    reconcileMesh();
+    const timer = window.setInterval(reconcileMesh, 3000);
+    return () => window.clearInterval(timer);
+  }, [
+    closePeer,
+    createPeerConnection,
+    myUid,
+    playerOrder,
+    players,
+    roomCode,
+    sendOfferToPeer,
+    voiceJoined,
+  ]);
+
+  // Listen for incoming WebRTC signaling packets with glare & stale-signal handling
   useEffect(() => {
     if (!voiceJoined || !roomCode || !myUid) return;
 
@@ -308,12 +454,33 @@ export function useWebRTCVoiceChat(params: {
         if (handledSignalsRef.current.has(sig.id)) continue;
         handledSignalsRef.current.add(sig.id);
 
+        // Ignore & clean up leftover signaling packets from prior sessions
+        const sigMs = sig.createdAt?.toMillis?.();
+        if (sigMs && joinTimestampMsRef.current && sigMs < joinTimestampMsRef.current - 12000) {
+          void deleteVoiceSignal(roomCode, sig.id);
+          continue;
+        }
+
         const peerUid = sig.fromUid;
+        const polite = myUid > peerUid;
+
         try {
           if (sig.type === 'offer') {
             const pc = createPeerConnection(peerUid);
             const desc = JSON.parse(sig.payload) as RTCSessionDescriptionInit;
-            await pc.setRemoteDescription(new RTCSessionDescription(desc));
+            const offerCollision = makingOfferRef.current.has(peerUid) || pc.signalingState !== 'stable';
+            if (offerCollision && !polite) {
+              continue;
+            }
+            if (offerCollision && polite) {
+              await Promise.all([
+                pc.setLocalDescription({ type: 'rollback' }),
+                pc.setRemoteDescription(new RTCSessionDescription(desc)),
+              ]);
+            } else {
+              await pc.setRemoteDescription(new RTCSessionDescription(desc));
+            }
+
             const queued = pendingIceRef.current.get(peerUid) ?? [];
             for (const cand of queued) {
               await pc.addIceCandidate(new RTCIceCandidate(cand));
@@ -366,7 +533,7 @@ export function useWebRTCVoiceChat(params: {
     return () => unsub();
   }, [createPeerConnection, myUid, roomCode, voiceJoined]);
 
-  // Speaking level detection timer (local & remote streams, zero Firestore writes)
+  // Speaking level detection timer using time-domain RMS (zero Firestore writes)
   useEffect(() => {
     if (!voiceJoined) return;
     const timer = window.setInterval(() => {
@@ -380,13 +547,14 @@ export function useWebRTCVoiceChat(params: {
           nextSpeaking[uid] = false;
           continue;
         }
-        entry.analyser.getByteFrequencyData(entry.data);
-        let sum = 0;
+        entry.analyser.getByteTimeDomainData(entry.data);
+        let sumSq = 0;
         for (let i = 0; i < entry.data.length; i++) {
-          sum += entry.data[i];
+          const centered = (entry.data[i] - 128) / 128;
+          sumSq += centered * centered;
         }
-        const avg = sum / entry.data.length;
-        nextSpeaking[uid] = avg > 14;
+        const rms = Math.sqrt(sumSq / entry.data.length);
+        nextSpeaking[uid] = rms > 0.025;
       }
       setSpeakingUids(nextSpeaking);
     }, 150);
@@ -415,9 +583,11 @@ export function useWebRTCVoiceChat(params: {
     voiceJoined,
     micMuted,
     voiceError,
+    audioBlocked,
     speakingUids,
     joinVoice,
     leaveVoice,
     toggleMute,
+    unlockAudio,
   };
 }

@@ -31,7 +31,7 @@ import {
   useGoldCard,
   useSwitchCard,
 } from '../firebase/multiplayerService';
-import { useWebRTCVoiceChat } from '../hooks/useWebRTCVoiceChat';
+import { useVoiceChat } from '../context/VoiceContext';
 import type { RoomDoc, RoomPlayerDoc } from '../types/game';
 import { formatMultiplayerError } from '../utils/errorMessages';
 import { soundFX } from '../utils/sound';
@@ -41,6 +41,7 @@ import {
   CardEventBanner,
   CardInventoryBar,
   CardRewardOverlay,
+  RoundResultsModal,
   TurnModeNotice,
 } from './SpecialCardModals';
 
@@ -53,16 +54,24 @@ export const OnlineGameScreen: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [dismissedAwardNonce, setDismissedAwardNonce] = useState<number>(0);
+  const [completedRoundSummary, setCompletedRoundSummary] = useState<number | null>(null);
   const [doubleSkipNotice, setDoubleSkipNotice] = useState(false);
   const prevTurnNonceRef = useRef<number | null>(null);
+  const prevRoundRef = useRef<number | null>(null);
+  const prevGameNumberRef = useRef<number | null>(null);
 
   const myUid = authUser?.uid ?? '';
-  const voice = useWebRTCVoiceChat({
-    roomCode: activeRoomCode,
-    myUid,
-    players,
-    playerOrder: room?.playerOrder ?? [],
-  });
+  const voice = useVoiceChat();
+  const { setVoiceRoomMeta, clearVoiceRoomMeta } = voice;
+
+  useEffect(() => {
+    setVoiceRoomMeta({
+      roomCode: activeRoomCode,
+      myUid,
+      players,
+      playerOrder: room?.playerOrder ?? [],
+    });
+  }, [activeRoomCode, myUid, players, room?.playerOrder, setVoiceRoomMeta]);
 
   useEffect(() => {
     if (!activeRoomCode) {
@@ -75,12 +84,14 @@ export const OnlineGameScreen: React.FC = () => {
       (nextRoom, nextPlayers) => {
         setLoading(false);
         if (!nextRoom || nextRoom.status === 'closed') {
+          clearVoiceRoomMeta();
           saveActiveRoom(null);
           setActiveRoomCode(null);
           setScreen('home');
           return;
         }
         if (authUser && !nextRoom.playerOrder.includes(authUser.uid)) {
+          clearVoiceRoomMeta();
           saveActiveRoom(null);
           setActiveRoomCode(null);
           setScreen('online_entry');
@@ -95,11 +106,36 @@ export const OnlineGameScreen: React.FC = () => {
         setRoom(nextRoom);
         setPlayers(nextPlayers);
 
+        if (
+          nextRoom.status === 'playing' &&
+          prevGameNumberRef.current === nextRoom.gameNumber &&
+          prevRoundRef.current !== null &&
+          nextRoom.currentRound > prevRoundRef.current
+        ) {
+          setCompletedRoundSummary(prevRoundRef.current);
+          soundFX.roundComplete(soundEnabled);
+        }
+        if (nextRoom.status !== 'playing' || prevGameNumberRef.current !== nextRoom.gameNumber) {
+          setCompletedRoundSummary(null);
+        }
+        prevGameNumberRef.current = nextRoom.gameNumber;
+        prevRoundRef.current = nextRoom.status === 'playing' ? nextRoom.currentRound : null;
+
         if (prevTurnNonceRef.current !== null && nextRoom.turnNonce !== prevTurnNonceRef.current) {
           if (nextRoom.status === 'finished' || nextRoom.status === 'exhausted') {
             soundFX.complete(soundEnabled);
           } else if (nextRoom.lastCardEvent?.nonce === nextRoom.turnNonce) {
-            soundFX.turnAlert(soundEnabled);
+            if (nextRoom.lastCardEvent.type === 'awarded') {
+              if (nextRoom.lastCardEvent.actorUid === authUser?.uid) {
+                soundFX.secretCardFanfare(soundEnabled);
+              } else if (nextRoom.activePlayerId === authUser?.uid) {
+                soundFX.turnAlert(soundEnabled);
+              } else {
+                soundFX.cardDeal(soundEnabled);
+              }
+            } else {
+              soundFX.turnAlert(soundEnabled);
+            }
           } else if (nextRoom.activePlayerId === authUser?.uid) {
             soundFX.turnAlert(soundEnabled);
           } else {
@@ -131,7 +167,7 @@ export const OnlineGameScreen: React.FC = () => {
       window.clearInterval(heartbeat);
       document.removeEventListener('visibilitychange', handleVis);
     };
-  }, [activeRoomCode, authUser?.uid, setActiveRoomCode, setScreen, soundEnabled]);
+  }, [activeRoomCode, authUser, clearVoiceRoomMeta, setActiveRoomCode, setScreen, soundEnabled, t]);
 
   if (loading || !room) {
     return (
@@ -163,7 +199,8 @@ export const OnlineGameScreen: React.FC = () => {
   const currentQuestion = getQuestionById(room.currentQuestionId);
 
   const showRewardModal = Boolean(
-    isMyTurn &&
+    completedRoundSummary === null &&
+      isMyTurn &&
       room.lastCardEvent?.type === 'awarded' &&
       room.lastCardEvent.actorUid === myUid &&
       room.lastCardEvent.nonce === room.turnNonce &&
@@ -258,6 +295,7 @@ export const OnlineGameScreen: React.FC = () => {
     soundFX.cardDeal(soundEnabled);
     setDoubleSkipNotice(false);
     setDismissedAwardNonce(0);
+    setCompletedRoundSummary(null);
     setBusy(true);
     setErrorMsg('');
     try {
@@ -273,8 +311,10 @@ export const OnlineGameScreen: React.FC = () => {
     soundFX.tap(soundEnabled);
     try {
       await voice.leaveVoice();
+      clearVoiceRoomMeta();
       await leaveMultiplayerRoom(room.roomCode);
     } catch {
+      clearVoiceRoomMeta();
       // still navigate home if network dropped
     } finally {
       setActiveRoomCode(null);
@@ -409,7 +449,6 @@ export const OnlineGameScreen: React.FC = () => {
       avatarColor: players[pid].avatarColor,
     }));
 
-  const remainingDeckCards = room.availableSpecialCards?.length ?? 0;
   const switchSourceName = room.switchSourceId ? players[room.switchSourceId]?.name : undefined;
 
   return (
@@ -455,10 +494,12 @@ export const OnlineGameScreen: React.FC = () => {
         voiceJoined={voice.voiceJoined}
         micMuted={voice.micMuted}
         voiceError={voice.voiceError}
+        voiceAudioBlocked={voice.audioBlocked}
         speakingUids={voice.speakingUids}
         onJoinVoice={() => void voice.joinVoice()}
         onLeaveVoice={() => void voice.leaveVoice()}
         onToggleMute={() => void voice.toggleMute()}
+        onUnlockVoiceAudio={voice.unlockAudio}
       />
 
       {/* Personal Card Inventory Bar */}
@@ -474,7 +515,6 @@ export const OnlineGameScreen: React.FC = () => {
           onUseSwitch={(targetUid) => void handleSwitchCard(targetUid)}
           onUseAntiSwitch={() => void handleAntiSwitchCard()}
           otherPlayers={otherSelectablePlayers}
-          remainingDeckCards={remainingDeckCards}
         />
       )}
 
@@ -762,6 +802,26 @@ export const OnlineGameScreen: React.FC = () => {
         </aside>
       </div>
 
+      {/* Round-End Results Summary Modal */}
+      <RoundResultsModal
+        visible={completedRoundSummary !== null && room.status === 'playing'}
+        completedRound={completedRoundSummary}
+        totalRounds={room.roundsCount}
+        gameMode={room.gameMode}
+        players={room.playerOrder
+          .map((pid) => players[pid])
+          .filter((p): p is RoomPlayerDoc => Boolean(p))
+          .map((p) => ({
+            uid: p.uid,
+            name: p.name,
+            avatarColor: p.avatarColor,
+            score: p.score ?? 0,
+            skipsRemaining: p.skipsRemaining,
+          }))}
+        showSkips
+        onContinue={() => setCompletedRoundSummary(null)}
+      />
+
       {/* Special Card Reward Celebration Overlay */}
       <CardRewardOverlay
         visible={showRewardModal}
@@ -779,9 +839,9 @@ export const OnlineGameScreen: React.FC = () => {
                 type="button"
                 disabled={busy}
                 onClick={() => void handleAntiSwitchCard()}
-                className="min-h-[50px] px-4 sm:px-5 rounded-2xl bg-[#F9EAE6] hover:bg-[#F3DDD7] border-2 border-[#B45E4D] text-[#843B2E] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 transition cursor-pointer shrink-0"
+                className="min-h-[50px] px-4 sm:px-5 rounded-2xl bg-[#FEE2E2] hover:bg-[#FECACA] border-2 border-[#DC2626] text-[#7F1D1D] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 transition cursor-pointer shrink-0 shadow-sm"
               >
-                <Shield className="w-4 h-4 text-[#8F4A3B] shrink-0" />
+                <Shield className="w-4 h-4 text-[#B91C1C] shrink-0" />
                 <span>{t.defendWithAntiSwitchBtn}</span>
               </button>
             ) : turnMode === 'normal' ? (

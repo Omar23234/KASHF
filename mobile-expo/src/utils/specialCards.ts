@@ -23,6 +23,7 @@ export interface CardEvent {
 export interface SinglePhonePlayer {
   id: string;
   name: string;
+  avatarColor?: string;
   score?: number;
   goldCards?: number;
   switchCards?: number;
