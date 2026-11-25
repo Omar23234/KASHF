@@ -50,6 +50,8 @@ export function formatMultiplayerError(err: unknown, t: TranslationDict): string
       return t.voiceUploadFailed;
     case 'VOICE_TOO_LARGE':
       return t.voiceTooLong;
+    case 'VOICE_EMPTY':
+      return t.voiceTooShort;
     case 'AUTH_REQUIRED':
       return t.anonAuthRequiredTitle;
     case 'MIN_PLAYERS_REQUIRED':

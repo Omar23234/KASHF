@@ -77,11 +77,20 @@ export const AvatarPickerModal: React.FC<AvatarPickerModalProps> = ({
         </div>
 
         {/* Live Preview */}
-        <div className="flex flex-col items-center gap-2 py-2">
+        <div className="flex flex-col items-center gap-1.5 py-2">
           <PlayerAvatar name={playerName || 'Player'} paletteId={previewSpec} size="xl" active />
           <span className="text-sm font-bold text-[#231A15]">
             {playerName.trim() || t.yourNamePlaceholder}
           </span>
+          {(() => {
+            const charObj = AVATAR_CHARACTERS.find((c) => c.id === selectedChar);
+            if (!charObj) return null;
+            return (
+              <span className="text-xs font-bold text-[#8B5E3C]">
+                {charObj.emoji} {language === 'ar' ? charObj.labelAr : charObj.labelEn}
+              </span>
+            );
+          })()}
         </div>
 
         {/* Characters Grid */}

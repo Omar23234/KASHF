@@ -59,6 +59,10 @@ export const OnlineGameScreen: React.FC = () => {
   const prevTurnNonceRef = useRef<number | null>(null);
   const prevRoundRef = useRef<number | null>(null);
   const prevGameNumberRef = useRef<number | null>(null);
+  const tRef = useRef(t);
+  tRef.current = t;
+  const soundEnabledRef = useRef(soundEnabled);
+  soundEnabledRef.current = soundEnabled;
 
   const myUid = authUser?.uid ?? '';
   const voice = useVoiceChat();
@@ -113,7 +117,7 @@ export const OnlineGameScreen: React.FC = () => {
           nextRoom.currentRound > prevRoundRef.current
         ) {
           setCompletedRoundSummary(prevRoundRef.current);
-          soundFX.roundComplete(soundEnabled);
+          soundFX.roundComplete(soundEnabledRef.current);
         }
         if (nextRoom.status !== 'playing' || prevGameNumberRef.current !== nextRoom.gameNumber) {
           setCompletedRoundSummary(null);
@@ -122,31 +126,32 @@ export const OnlineGameScreen: React.FC = () => {
         prevRoundRef.current = nextRoom.status === 'playing' ? nextRoom.currentRound : null;
 
         if (prevTurnNonceRef.current !== null && nextRoom.turnNonce !== prevTurnNonceRef.current) {
+          const snd = soundEnabledRef.current;
           if (nextRoom.status === 'finished' || nextRoom.status === 'exhausted') {
-            soundFX.complete(soundEnabled);
+            soundFX.complete(snd);
           } else if (nextRoom.lastCardEvent?.nonce === nextRoom.turnNonce) {
             if (nextRoom.lastCardEvent.type === 'awarded') {
               if (nextRoom.lastCardEvent.actorUid === authUser?.uid) {
-                soundFX.secretCardFanfare(soundEnabled);
+                soundFX.secretCardFanfare(snd);
               } else if (nextRoom.activePlayerId === authUser?.uid) {
-                soundFX.turnAlert(soundEnabled);
+                soundFX.turnAlert(snd);
               } else {
-                soundFX.cardDeal(soundEnabled);
+                soundFX.cardDeal(snd);
               }
             } else {
-              soundFX.turnAlert(soundEnabled);
+              soundFX.turnAlert(snd);
             }
           } else if (nextRoom.activePlayerId === authUser?.uid) {
-            soundFX.turnAlert(soundEnabled);
+            soundFX.turnAlert(snd);
           } else {
-            soundFX.cardDeal(soundEnabled);
+            soundFX.cardDeal(snd);
           }
         }
         prevTurnNonceRef.current = nextRoom.turnNonce;
       },
       (err) => {
         setLoading(false);
-        setErrorMsg(formatMultiplayerError(err, t));
+        setErrorMsg(formatMultiplayerError(err, tRef.current));
       }
     );
 
@@ -160,14 +165,19 @@ export const OnlineGameScreen: React.FC = () => {
     const handleVis = () => {
       void setPlayerConnectionState(activeRoomCode, document.visibilityState === 'visible');
     };
+    const handleUnload = () => {
+      void setPlayerConnectionState(activeRoomCode, false);
+    };
     document.addEventListener('visibilitychange', handleVis);
+    window.addEventListener('pagehide', handleUnload);
 
     return () => {
       unsub();
       window.clearInterval(heartbeat);
       document.removeEventListener('visibilitychange', handleVis);
+      window.removeEventListener('pagehide', handleUnload);
     };
-  }, [activeRoomCode, authUser, clearVoiceRoomMeta, setActiveRoomCode, setScreen, soundEnabled, t]);
+  }, [activeRoomCode, authUser, clearVoiceRoomMeta, setActiveRoomCode, setScreen]);
 
   if (loading || !room) {
     return (
@@ -494,11 +504,15 @@ export const OnlineGameScreen: React.FC = () => {
         voiceJoined={voice.voiceJoined}
         micMuted={voice.micMuted}
         voiceError={voice.voiceError}
+        voiceStatus={voice.voiceStatus}
+        connectedPeersCount={voice.connectedPeersCount}
+        localMicLevel={voice.localMicLevel}
         voiceAudioBlocked={voice.audioBlocked}
         speakingUids={voice.speakingUids}
         onJoinVoice={() => void voice.joinVoice()}
         onLeaveVoice={() => void voice.leaveVoice()}
         onToggleMute={() => void voice.toggleMute()}
+        onReconnectVoice={() => void voice.reconnectVoice()}
         onUnlockVoiceAudio={voice.unlockAudio}
       />
 

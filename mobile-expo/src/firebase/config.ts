@@ -80,6 +80,8 @@ if (isFirebaseConfigured) {
       ? getFirestore(appInstance, resolvedConfig.firestoreDatabaseId)
       : getFirestore(appInstance);
     storageInstance = getStorage(appInstance);
+    storageInstance.maxUploadRetryTime = 5000;
+    storageInstance.maxOperationRetryTime = 5000;
   } catch (err) {
     initError = err instanceof Error ? err.message : String(err);
     authInstance = null;

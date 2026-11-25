@@ -18,6 +18,7 @@ import {
   writeBatch,
   type Unsubscribe,
 } from 'firebase/firestore';
+import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { pickDefaultAvatar } from '../config/avatars';
 import { drawRandomUnusedQuestionId, shuffleArray, TOTAL_QUESTIONS_COUNT } from '../data/questions';
 import {
@@ -26,6 +27,7 @@ import {
   handleFirestoreError,
   isFirebaseConfigured,
   OperationType,
+  storage,
   testConnection,
 } from '../firebase/config';
 import type { Language } from '../i18n/translations';
@@ -1255,25 +1257,30 @@ export async function setPlayerVoiceState(
   roomCode: string,
   voiceJoined: boolean,
   micMuted: boolean
-): Promise<void> {
-  if (!isFirebaseConfigured || !auth || !db) return;
+): Promise<boolean> {
+  if (!isFirebaseConfigured || !auth || !db) return false;
   const user = auth.currentUser;
-  if (!user) return;
+  if (!user) return false;
   try {
     await updateDoc(doc(db, 'rooms', roomCode, 'players', user.uid), {
       voiceJoined,
       micMuted,
       lastSeenAt: serverTimestamp(),
     });
+    return true;
   } catch {
-    // ignore
+    return false;
   }
+}
+
+function safeTrimSlice(input: string, maxChars: number): string {
+  return Array.from(input.trim()).slice(0, maxChars).join('');
 }
 
 function buildReplyPayload(replyTo?: ChatReplyReference | null): Partial<ChatReplyReference> {
   if (!replyTo) return {};
-  const preview = replyTo.replyToPreviewText.trim().slice(0, 160) || '...';
-  const sender = replyTo.replyToSenderName.trim().slice(0, 24) || 'Player';
+  const preview = safeTrimSlice(replyTo.replyToPreviewText, 160) || '...';
+  const sender = safeTrimSlice(replyTo.replyToSenderName, 24) || 'Player';
   return {
     replyToMessageId: replyTo.replyToMessageId,
     replyToSenderName: sender,
@@ -1292,15 +1299,17 @@ export async function sendRoomChatMessage(
   const { auth: firebaseAuth, db: firestore } = requireFirebase();
   const user = firebaseAuth.currentUser;
   if (!user) throw new Error('AUTH_REQUIRED');
-  const cleanText = text.trim().slice(0, 500);
+  if (!roomCode) throw new Error('ROOM_NOT_FOUND');
+  const cleanText = safeTrimSlice(text, 500);
   if (!cleanText) return;
-  const cleanName = (senderName || 'Player').trim().slice(0, 24) || 'Player';
+  const cleanName = safeTrimSlice(senderName || 'Player', 24) || 'Player';
   const safeMembers = Array.from(new Set([user.uid, ...memberIds])).slice(0, 12);
   try {
     await addDoc(collection(firestore, 'rooms', roomCode, 'messages'), {
       senderId: user.uid,
       senderName: cleanName,
       text: cleanText,
+      messageType: 'text',
       memberIds: safeMembers,
       ...buildReplyPayload(replyTo),
       createdAt: serverTimestamp(),
@@ -1341,55 +1350,94 @@ export function subscribeToRoomMessages(
   );
 }
 
+const MAX_STORAGE_VOICE_BYTES = 4.5 * 1024 * 1024;
 const MAX_INLINE_VOICE_BYTES = 480 * 1024;
 const MAX_INLINE_VOICE_DATA_URI_CHARS = 700000;
-const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
-function encodeBytesToBase64(bytes: Uint8Array): string {
-  let out = '';
-  const len = bytes.length;
-  for (let i = 0; i < len; i += 3) {
-    const b1 = bytes[i];
-    const hasB2 = i + 1 < len;
-    const hasB3 = i + 2 < len;
-    const b2 = hasB2 ? bytes[i + 1] : 0;
-    const b3 = hasB3 ? bytes[i + 2] : 0;
-
-    out += BASE64_CHARS[b1 >> 2];
-    out += BASE64_CHARS[((b1 & 0x03) << 4) | (b2 >> 4)];
-    out += hasB2 ? BASE64_CHARS[((b2 & 0x0f) << 2) | (b3 >> 6)] : '=';
-    out += hasB3 ? BASE64_CHARS[b3 & 0x3f] : '=';
-  }
-  return out;
-}
-
-function readLocalAudioBytes(uri: string): Promise<Uint8Array> {
+function readLocalAudioBlob(uri: string): Promise<Blob> {
   return new Promise((resolve, reject) => {
     try {
       const xhr = new XMLHttpRequest();
       xhr.open('GET', uri, true);
-      xhr.responseType = 'arraybuffer';
+      xhr.responseType = 'blob';
       xhr.onload = () => {
         if ((xhr.status === 200 || xhr.status === 0) && xhr.response) {
-          resolve(new Uint8Array(xhr.response as ArrayBuffer));
+          resolve(xhr.response as Blob);
         } else {
           reject(new Error(`XHR_STATUS_${xhr.status}`));
         }
       };
       xhr.onerror = () => {
         fetch(uri)
-          .then((r) => r.arrayBuffer())
-          .then((buf) => resolve(new Uint8Array(buf)))
+          .then((r) => r.blob())
+          .then(resolve)
           .catch(reject);
       };
-      xhr.send();
+      xhr.send(null);
     } catch {
       fetch(uri)
-        .then((r) => r.arrayBuffer())
-        .then((buf) => resolve(new Uint8Array(buf)))
+        .then((r) => r.blob())
+        .then(resolve)
         .catch(reject);
     }
   });
+}
+
+function blobToBase64Body(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const res = typeof reader.result === 'string' ? reader.result : '';
+      const commaIdx = res.indexOf(',');
+      if (commaIdx !== -1) {
+        resolve(res.slice(commaIdx + 1).replace(/\s+/g, ''));
+      } else {
+        reject(new Error('READER_EMPTY'));
+      }
+    };
+    reader.onerror = () => reject(new Error('READER_FAILED'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function extensionFromAudioMime(mime: string): string {
+  if (mime.includes('mp4') || mime.includes('m4a') || mime.includes('aac')) return 'm4a';
+  if (mime.includes('ogg')) return 'ogg';
+  if (mime.includes('mpeg') || mime.includes('mp3')) return 'mp3';
+  if (mime.includes('wav')) return 'wav';
+  return 'webm';
+}
+
+async function tryUploadVoiceToStorage(
+  roomCode: string,
+  senderUid: string,
+  blob: Blob,
+  safeMime: string
+): Promise<{ url: string; path: string } | null> {
+  if (!storage) return null;
+  try {
+    const ext = extensionFromAudioMime(safeMime);
+    const rand = Math.random().toString(36).slice(2, 8);
+    const storagePath = `voiceMessages/${roomCode}/${senderUid}/${Date.now()}_${rand}.${ext}`;
+    const storageRef = ref(storage, storagePath);
+
+    const uploadTask = (async () => {
+      await uploadBytes(storageRef, blob, { contentType: safeMime });
+      return await getDownloadURL(storageRef);
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('STORAGE_TIMEOUT')), 6500);
+    });
+
+    const url = await Promise.race([uploadTask, timeoutPromise]);
+    if (typeof url === 'string' && url.startsWith('https://') && url.length <= 2048) {
+      return { url, path: storagePath };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 export async function uploadAndSendVoiceMessage(params: {
@@ -1408,24 +1456,43 @@ export async function uploadAndSendVoiceMessage(params: {
   const rawMime = (params.mimeType || 'audio/mp4').split(';')[0].trim().toLowerCase();
   const safeMime = rawMime.startsWith('audio/') ? rawMime : 'audio/mp4';
 
-  let bytes: Uint8Array;
+  let audioBlob: Blob;
   try {
-    bytes = await readLocalAudioBytes(params.uri);
+    audioBlob = await readLocalAudioBlob(params.uri);
   } catch {
     throw new Error('VOICE_UPLOAD_FAILED');
   }
 
-  if (bytes.byteLength < 64) {
-    throw new Error('VOICE_UPLOAD_FAILED');
+  if (audioBlob.size < 64) {
+    throw new Error('VOICE_EMPTY');
   }
-  if (bytes.byteLength > MAX_INLINE_VOICE_BYTES) {
+  if (audioBlob.size > MAX_STORAGE_VOICE_BYTES) {
     throw new Error('VOICE_TOO_LARGE');
   }
 
-  const base64Body = encodeBytesToBase64(bytes);
-  const audioDataUrl = `data:${safeMime};base64,${base64Body}`;
-  if (audioDataUrl.length < 30 || audioDataUrl.length > MAX_INLINE_VOICE_DATA_URI_CHARS) {
-    throw new Error('VOICE_TOO_LARGE');
+  let audioUrl = '';
+  let audioStoragePath = 'inline';
+
+  const uploaded = await tryUploadVoiceToStorage(params.roomCode, user.uid, audioBlob, safeMime);
+  if (uploaded) {
+    audioUrl = uploaded.url;
+    audioStoragePath = uploaded.path;
+  } else {
+    if (audioBlob.size > MAX_INLINE_VOICE_BYTES) {
+      throw new Error('VOICE_TOO_LARGE');
+    }
+
+    let base64Body = '';
+    try {
+      base64Body = await blobToBase64Body(audioBlob);
+    } catch {
+      throw new Error('VOICE_UPLOAD_FAILED');
+    }
+
+    audioUrl = `data:${safeMime};base64,${base64Body}`;
+    if (audioUrl.length < 30 || audioUrl.length > MAX_INLINE_VOICE_DATA_URI_CHARS) {
+      throw new Error('VOICE_TOO_LARGE');
+    }
   }
 
   const safeDuration = Math.min(180, Math.max(1, Math.round(params.durationSec)));
@@ -1439,8 +1506,8 @@ export async function uploadAndSendVoiceMessage(params: {
       text: `[Voice ${safeDuration}s]`,
       memberIds: safeMembers,
       messageType: 'voice',
-      audioUrl: audioDataUrl,
-      audioStoragePath: 'inline',
+      audioUrl,
+      audioStoragePath,
       audioDurationSec: safeDuration,
       audioMimeType: safeMime,
       ...buildReplyPayload(params.replyTo),
@@ -1594,6 +1661,23 @@ export async function sendVoiceSignal(
     });
   } catch {
     // ignore
+  }
+}
+
+export async function clearMyVoiceSignals(roomCode: string): Promise<void> {
+  if (!isFirebaseConfigured || !auth || !db || !roomCode) return;
+  const user = auth.currentUser;
+  if (!user) return;
+  try {
+    const q = query(
+      collection(db, 'rooms', roomCode, 'voiceSignals'),
+      where('toUid', '==', user.uid)
+    );
+    const snap = await getDocs(q);
+    if (snap.empty) return;
+    await Promise.all(snap.docs.map((d) => deleteDoc(d.ref).catch(() => {})));
+  } catch {
+    // ignore cleanup errors
   }
 }
 

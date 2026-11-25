@@ -310,16 +310,22 @@ export default function App() {
   }, [screen]);
 
   // Real-time Firestore Room & Players Listener
+  const tRef = useRef(t);
+  tRef.current = t;
+  const soundEnabledRef = useRef(soundEnabled);
+  soundEnabledRef.current = soundEnabled;
+
   useEffect(() => {
     if (!activeRoomCode) return;
     const unsub = subscribeToRoomAndPlayers(
       activeRoomCode,
       (nextRoom, nextPlayers) => {
+        const dict = tRef.current;
         if (!nextRoom || nextRoom.status === 'closed') {
           void saveActiveRoom(null);
           setActiveRoomCode(null);
           setRoom(null);
-          setErrorMsg(t.errRoomClosed);
+          setErrorMsg(dict.errRoomClosed);
           setScreen('online_entry');
           return;
         }
@@ -327,7 +333,7 @@ export default function App() {
           void saveActiveRoom(null);
           setActiveRoomCode(null);
           setRoom(null);
-          setErrorMsg(t.errKickedFromRoom);
+          setErrorMsg(dict.errKickedFromRoom);
           setScreen('online_entry');
           return;
         }
@@ -338,7 +344,7 @@ export default function App() {
           nextRoom.currentRound > prevOnlineRoundRef.current
         ) {
           setCompletedOnlineRound(prevOnlineRoundRef.current);
-          if (soundEnabled) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          if (soundEnabledRef.current) Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
         }
         if (nextRoom.status !== 'playing' || prevOnlineGameNumRef.current !== nextRoom.gameNumber) {
           setCompletedOnlineRound(null);
@@ -351,7 +357,7 @@ export default function App() {
         if (nextRoom.status === 'waiting') setScreen('online_lobby');
         else setScreen('online_game');
       },
-      (err) => setErrorMsg(formatMultiplayerError(err, t))
+      (err) => setErrorMsg(formatMultiplayerError(err, tRef.current))
     );
 
     void setPlayerConnectionState(activeRoomCode, true);
@@ -363,7 +369,7 @@ export default function App() {
       unsub();
       clearInterval(timer);
     };
-  }, [activeRoomCode, authUser, soundEnabled, t]);
+  }, [activeRoomCode, authUser]);
 
   // Track Single Phone round transitions for Round Results summary
   useEffect(() => {
@@ -430,26 +436,27 @@ export default function App() {
           setUnreadChatCount((c) => c + fromOthers.length);
           if (chatNotificationsEnabledRef.current) {
             const latest = fromOthers[fromOthers.length - 1];
+            const dict = tRef.current;
             const previewBody =
               latest.messageType === 'voice'
-                ? `🎤 ${t.replyVoicePreview}`
+                ? `🎤 ${dict.replyVoicePreview}`
                 : latest.text;
             void scheduleIncomingChatNotification({
               roomCode: activeRoomCode,
-              title: `${latest.senderName} · ${t.newMessageNotifTitle}`,
+              title: `${latest.senderName} · ${dict.newMessageNotifTitle}`,
               body: previewBody.slice(0, 120),
             });
           }
         }
       },
-      (err) => setErrorMsg(formatMultiplayerError(err, t))
+      (err) => setErrorMsg(formatMultiplayerError(err, tRef.current))
     );
 
     const unsubReacts = subscribeToRoomReactions(
       activeRoomCode,
       myUid,
       setOnlineReactions,
-      (err) => setErrorMsg(formatMultiplayerError(err, t))
+      (err) => setErrorMsg(formatMultiplayerError(err, tRef.current))
     );
 
     const unsubPresence = subscribeToRoomChatPresence(
@@ -458,7 +465,8 @@ export default function App() {
       (items) => {
         setChatPresence(items);
         setPresenceNowMs(Date.now());
-      }
+      },
+      (err) => setErrorMsg(formatMultiplayerError(err, tRef.current))
     );
 
     return () => {
@@ -466,7 +474,7 @@ export default function App() {
       unsubReacts();
       unsubPresence();
     };
-  }, [activeRoomCode, myUid, t]);
+  }, [activeRoomCode, myUid]);
 
   useEffect(() => {
     const hasRemote = chatPresence.some((p) => p.uid !== myUid && p.status !== 'idle');
@@ -634,6 +642,21 @@ export default function App() {
   const renderVoiceAndChatBar = (currentRoom: RoomDoc) => {
     const joinedVoiceCount = currentRoom.playerOrder.filter((id) => players[id]?.voiceJoined).length;
     const chatActivity = getClosedChatActivityLabel();
+    const statusLabel =
+      voice.voiceStatus === 'connected'
+        ? `${t.voiceStatusConnected} (${voice.connectedPeersCount})`
+        : voice.voiceStatus === 'connecting'
+          ? t.voiceStatusConnecting
+          : voice.voiceStatus === 'reconnecting'
+            ? t.voiceStatusReconnecting
+            : voice.voiceStatus === 'failed'
+              ? t.voiceStatusFailed
+              : voice.voiceStatus === 'joining'
+                ? t.voiceStatusJoining
+                : voice.voiceStatus === 'waiting_peers'
+                  ? t.voiceStatusWaitingPeers
+                  : '';
+
     return (
       <View style={styles.cardCompact}>
         <View style={[styles.rowBetweenWrap, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
@@ -643,13 +666,16 @@ export default function App() {
             </Text>
             {!voice.voiceJoined ? (
               <TouchableOpacity
+                disabled={voice.voiceStatus === 'joining'}
                 onPress={() => {
                   hapticTap();
                   void voice.joinVoice();
                 }}
-                style={styles.voiceJoinBtn}
+                style={[styles.voiceJoinBtn, voice.voiceStatus === 'joining' && styles.disabledBtn]}
               >
-                <Text style={styles.voiceJoinBtnText}>{t.joinVoiceBtn}</Text>
+                <Text style={styles.voiceJoinBtnText}>
+                  {voice.voiceStatus === 'joining' ? t.voiceStatusJoining : t.joinVoiceBtn}
+                </Text>
               </TouchableOpacity>
             ) : (
               <>
@@ -676,6 +702,17 @@ export default function App() {
                 >
                   <Text style={styles.voiceLeaveBtnText}>{t.leaveVoiceBtn}</Text>
                 </TouchableOpacity>
+                {(voice.voiceStatus === 'failed' || voice.voiceStatus === 'reconnecting') && (
+                  <TouchableOpacity
+                    onPress={() => {
+                      hapticTap();
+                      void voice.reconnectVoice();
+                    }}
+                    style={styles.voiceReconnectBtn}
+                  >
+                    <Text style={styles.voiceReconnectBtnText}>{t.voiceReconnectBtn}</Text>
+                  </TouchableOpacity>
+                )}
               </>
             )}
           </View>
@@ -715,6 +752,22 @@ export default function App() {
             )}
           </TouchableOpacity>
         </View>
+
+        {voice.voiceJoined && !!statusLabel && (
+          <Text
+            style={[
+              styles.voiceStatusText,
+              voice.voiceStatus === 'connected'
+                ? styles.voiceStatusConnectedText
+                : voice.voiceStatus === 'failed'
+                  ? styles.voiceStatusFailedText
+                  : styles.voiceStatusPendingText,
+              dirText,
+            ]}
+          >
+            {statusLabel}
+          </Text>
+        )}
 
         {!!voice.voiceError && (
           <Text style={[styles.errorText, dirText]}>
@@ -3093,6 +3146,7 @@ export default function App() {
           spState={spChatState}
           onUpdateSpState={(updater) => setSpChatState((prev) => updater(prev))}
           onHapticTap={hapticTap}
+          voiceJoined={voice.voiceJoined}
         />
 
         {(() => {
@@ -3592,6 +3646,19 @@ const styles = StyleSheet.create({
     borderColor: '#D5C7B2',
   },
   voiceLeaveBtnText: { color: '#5E4F43', fontSize: 12, fontWeight: '700' },
+  voiceReconnectBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 10,
+    backgroundColor: '#FBF5E4',
+    borderWidth: 1,
+    borderColor: '#D7BD7B',
+  },
+  voiceReconnectBtnText: { color: '#7D5D18', fontSize: 12, fontWeight: '800' },
+  voiceStatusText: { fontSize: 11, fontWeight: '700' },
+  voiceStatusConnectedText: { color: '#355432' },
+  voiceStatusPendingText: { color: '#7D5D18' },
+  voiceStatusFailedText: { color: '#9B3B30' },
   chatToggleBtn: {
     flexDirection: 'row',
     alignItems: 'center',

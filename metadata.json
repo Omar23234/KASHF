@@ -1,7 +1,9 @@
 {
   "name": "KASHF | كَشْف — Party Questions Game",
   "description": "لعبة أسئلة جماعية أونلاين وعلى موبايل واحد باللهجة المصرية — Real-time multiplayer & offline single-phone party questions game.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": [
+    "microphone"
+  ],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]

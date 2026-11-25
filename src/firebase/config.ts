@@ -10,6 +10,8 @@ const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const storage = getStorage(app);
+storage.maxUploadRetryTime = 5000;
+storage.maxOperationRetryTime = 5000;
 
 export enum OperationType {
   CREATE = 'create',

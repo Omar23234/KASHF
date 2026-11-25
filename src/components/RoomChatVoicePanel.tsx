@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Bell,
   Clock,
+  ExternalLink,
   Loader2,
   MessageSquare,
   Mic,
@@ -10,6 +11,7 @@ import {
   PhoneOff,
   Play,
   Radio,
+  RefreshCw,
   Reply,
   Send,
   Smile,
@@ -39,7 +41,7 @@ import {
   toggleMessageReaction,
   uploadAndSendVoiceMessage,
 } from '../firebase/multiplayerService';
-import type { VoiceErrorType } from '../hooks/useWebRTCVoiceChat';
+import type { VoiceConnectionStatus, VoiceErrorType } from '../hooks/useWebRTCVoiceChat';
 import {
   REACTION_EMOJIS,
   type ChatPresenceStatus,
@@ -57,6 +59,7 @@ import {
   showIncomingChatNotification,
   type WebNotificationPermissionState,
 } from '../utils/chatNotifications';
+import { formatMultiplayerError } from '../utils/errorMessages';
 import {
   appendSinglePhoneTextMessage,
   appendSinglePhoneVoiceMessage,
@@ -70,7 +73,7 @@ import { PlayerAvatar } from './PlayerAvatar';
 type ChatTab = 'messages' | 'emojis';
 
 const MAX_VOICE_SECONDS = 90;
-const MAX_ONLINE_VOICE_BYTES = 480 * 1024;
+const MAX_ONLINE_VOICE_BYTES = Math.floor(4.5 * 1024 * 1024);
 const MAX_LOCAL_VOICE_BYTES = 480 * 1024;
 
 interface UnifiedDisplayMessage {
@@ -104,11 +107,15 @@ interface OnlineRoomChatProps {
   voiceJoined: boolean;
   micMuted: boolean;
   voiceError: VoiceErrorType;
+  voiceStatus?: VoiceConnectionStatus;
+  connectedPeersCount?: number;
+  localMicLevel?: number;
   voiceAudioBlocked?: boolean;
   speakingUids: Record<string, boolean>;
   onJoinVoice: () => void;
   onLeaveVoice: () => void;
   onToggleMute: () => void;
+  onReconnectVoice?: () => void;
   onUnlockVoiceAudio?: () => void;
 }
 
@@ -195,7 +202,15 @@ const VoiceMessageBubble: React.FC<VoiceMessageBubbleProps> = ({
 
   const togglePlay = async () => {
     const el = audioRef.current;
-    if (!el || playbackError) return;
+    if (!el) return;
+    if (playbackError) {
+      setPlaybackError(false);
+      try {
+        el.load();
+      } catch {
+        // ignore reload failure
+      }
+    }
     if (isPlaying) {
       el.pause();
       onStopPlay(messageId);
@@ -329,6 +344,7 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
   const [chatFeedback, setChatFeedback] = useState<{
     type: 'error' | 'info' | 'success';
     text: string;
+    isIframeMicBlocked?: boolean;
   } | null>(null);
 
   // Reply & Reactions UI states
@@ -346,6 +362,8 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
   chatOpenRef.current = chatOpen;
   const notifEnabledRef = useRef(chatNotificationsEnabled);
   notifEnabledRef.current = chatNotificationsEnabled;
+  const tRef = useRef(t);
+  tRef.current = t;
   const initialMsgsLoadedRef = useRef(false);
   const knownMsgIdsRef = useRef<Set<string>>(new Set());
 
@@ -375,12 +393,15 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
     atMs: 0,
   });
 
-  const showTimedFeedback = useCallback((type: 'error' | 'info' | 'success', text: string) => {
-    setChatFeedback({ type, text });
-    window.setTimeout(() => {
-      setChatFeedback((curr) => (curr?.text === text ? null : curr));
-    }, 4500);
-  }, []);
+  const showTimedFeedback = useCallback(
+    (type: 'error' | 'info' | 'success', text: string, isIframeMicBlocked = false) => {
+      setChatFeedback({ type, text, isIframeMicBlocked });
+      window.setTimeout(() => {
+        setChatFeedback((curr) => (curr?.text === text ? null : curr));
+      }, isIframeMicBlocked ? 9000 : 4500);
+    },
+    []
+  );
 
   // Sync active Single Phone sender cleanly when turn changes and user has modal closed
   useEffect(() => {
@@ -458,71 +479,87 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
     initialMsgsLoadedRef.current = false;
     knownMsgIdsRef.current = new Set();
 
-    const unsubMsgs = subscribeToRoomMessages(onlineRoomCode, onlineMyUid, (msgs) => {
-      setOnlineMessages(msgs);
+    const unsubMsgs = subscribeToRoomMessages(
+      onlineRoomCode,
+      onlineMyUid,
+      (msgs) => {
+        setOnlineMessages(msgs);
 
-      if (!initialMsgsLoadedRef.current) {
-        initialMsgsLoadedRef.current = true;
-        knownMsgIdsRef.current = new Set(msgs.map((m) => m.id));
+        if (!initialMsgsLoadedRef.current) {
+          initialMsgsLoadedRef.current = true;
+          knownMsgIdsRef.current = new Set(msgs.map((m) => m.id));
+          if (chatOpenRef.current) {
+            setUnreadCount(0);
+          }
+          return;
+        }
+
+        const newlyArrived = msgs.filter((m) => !knownMsgIdsRef.current.has(m.id));
+        for (const m of msgs) {
+          knownMsgIdsRef.current.add(m.id);
+        }
+
         if (chatOpenRef.current) {
           setUnreadCount(0);
+          return;
         }
-        return;
-      }
 
-      const newlyArrived = msgs.filter((m) => !knownMsgIdsRef.current.has(m.id));
-      for (const m of msgs) {
-        knownMsgIdsRef.current.add(m.id);
-      }
-
-      if (chatOpenRef.current) {
-        setUnreadCount(0);
-        return;
-      }
-
-      const fromOthers = newlyArrived.filter((m) => m.senderId !== onlineMyUid);
-      if (fromOthers.length > 0) {
-        setUnreadCount((prev) => prev + fromOthers.length);
-        if (notifEnabledRef.current) {
-          const latest = fromOthers[fromOthers.length - 1];
-          const bodyPreview =
-            latest.messageType === 'voice'
-              ? `${t.replyVoicePreview} (${formatMmSs(latest.audioDurationSec ?? 1)})`
-              : latest.text;
-          void showIncomingChatNotification({
-            roomCode: onlineRoomCode,
-            title: `${latest.senderName} · ${t.newMessageNotifTitle}`,
-            body: bodyPreview,
-            onOpenChat: () => {
-              setActiveTab('messages');
-              setChatOpen(true);
-            },
-          });
+        const fromOthers = newlyArrived.filter((m) => m.senderId !== onlineMyUid);
+        if (fromOthers.length > 0) {
+          setUnreadCount((prev) => prev + fromOthers.length);
+          if (notifEnabledRef.current) {
+            const latest = fromOthers[fromOthers.length - 1];
+            const dict = tRef.current;
+            const bodyPreview =
+              latest.messageType === 'voice'
+                ? `${dict.replyVoicePreview} (${formatMmSs(latest.audioDurationSec ?? 1)})`
+                : latest.text;
+            void showIncomingChatNotification({
+              roomCode: onlineRoomCode,
+              title: `${latest.senderName} · ${dict.newMessageNotifTitle}`,
+              body: bodyPreview,
+              onOpenChat: () => {
+                setActiveTab('messages');
+                setChatOpen(true);
+              },
+            });
+          }
         }
+      },
+      (err) => {
+        showTimedFeedback('error', formatMultiplayerError(err, tRef.current));
       }
-    });
+    );
 
-    const unsubReactions = subscribeToRoomReactions(onlineRoomCode, onlineMyUid, (rxns) => {
-      setOnlineReactions(rxns);
-    });
+    const unsubReactions = subscribeToRoomReactions(
+      onlineRoomCode,
+      onlineMyUid,
+      (rxns) => {
+        setOnlineReactions(rxns);
+      },
+      (err) => {
+        showTimedFeedback('error', formatMultiplayerError(err, tRef.current));
+      }
+    );
 
-    const unsubPresence = subscribeToRoomChatPresence(onlineRoomCode, onlineMyUid, (items) => {
-      setOnlinePresence(items);
-      setPresenceNowMs(Date.now());
-    });
+    const unsubPresence = subscribeToRoomChatPresence(
+      onlineRoomCode,
+      onlineMyUid,
+      (items) => {
+        setOnlinePresence(items);
+        setPresenceNowMs(Date.now());
+      },
+      (err) => {
+        showTimedFeedback('error', formatMultiplayerError(err, tRef.current));
+      }
+    );
 
     return () => {
       unsubMsgs();
       unsubReactions();
       unsubPresence();
     };
-  }, [
-    isSinglePhone,
-    onlineRoomCode,
-    onlineMyUid,
-    t.newMessageNotifTitle,
-    t.replyVoicePreview,
-  ]);
+  }, [isSinglePhone, onlineRoomCode, onlineMyUid, showTimedFeedback]);
 
   const publishPresence = useCallback(
     (nextStatus: ChatPresenceStatus, force = false) => {
@@ -702,7 +739,7 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
       }));
     }
     return onlineMessages
-      .filter((m) => m.messageType === 'text' || m.messageType === 'voice')
+      .filter((m) => !m.messageType || m.messageType === 'text' || m.messageType === 'voice')
       .map((m) => ({
         id: m.id,
         senderId: m.senderId,
@@ -765,8 +802,8 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
     }
     return {
       replyToMessageId: m.id,
-      replyToSenderName: m.senderName,
-      replyToPreviewText: previewText.slice(0, 160),
+      replyToSenderName: Array.from(m.senderName.trim()).slice(0, 24).join('') || 'Player',
+      replyToPreviewText: Array.from(previewText.trim()).slice(0, 150).join('') || '...',
       replyToType: m.messageType,
     };
   };
@@ -810,6 +847,10 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
           return next;
         });
       } else {
+        if (!onlineRoomCode || !onlineMyUid) {
+          showTimedFeedback('error', t.anonAuthRequiredTitle);
+          return;
+        }
         await toggleMessageReaction({
           roomCode: onlineRoomCode,
           messageId,
@@ -819,8 +860,8 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
           currentMyEmoji,
         });
       }
-    } catch {
-      showTimedFeedback('error', t.errPermissionDenied);
+    } catch (err) {
+      showTimedFeedback('error', formatMultiplayerError(err, t));
     }
   };
 
@@ -828,6 +869,10 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
     if (e) e.preventDefault();
     const text = draft.trim();
     if (!text || sending) return;
+    if (!isSinglePhone && (!onlineRoomCode || !onlineMyUid)) {
+      showTimedFeedback('error', t.anonAuthRequiredTitle);
+      return;
+    }
     const activeReply = replyTo;
     setSending(true);
     setDraft('');
@@ -856,10 +901,10 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
         );
       }
       setActiveTab('messages');
-    } catch {
+    } catch (err) {
       setDraft(text);
       setReplyTo(activeReply);
-      showTimedFeedback('error', t.errNetwork);
+      showTimedFeedback('error', formatMultiplayerError(err, t));
     } finally {
       setSending(false);
     }
@@ -944,15 +989,7 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
       setReplyTo(null);
       setActiveTab('messages');
     } catch (err) {
-      if (err instanceof Error && err.message === 'VOICE_STORAGE_UNAVAILABLE') {
-        showTimedFeedback('error', t.voiceStorageUnavailable);
-      } else if (err instanceof Error && err.message === 'VOICE_TOO_LARGE') {
-        showTimedFeedback('error', t.voiceTooLong);
-      } else if (err instanceof Error && err.message === 'VOICE_EMPTY') {
-        showTimedFeedback('info', t.voiceTooShort);
-      } else {
-        showTimedFeedback('error', t.voiceUploadFailed);
-      }
+      showTimedFeedback('error', formatMultiplayerError(err, t));
     } finally {
       voiceSendingRef.current = false;
       setRecordingState('idle');
@@ -972,19 +1009,33 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
 
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+      } catch (constraintErr: unknown) {
+        const cName = (constraintErr as { name?: string })?.name ?? '';
+        if (cName === 'OverconstrainedError' || cName === 'TypeError') {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } else {
+          throw constraintErr;
+        }
+      }
     } catch (err: unknown) {
       const name = (err as { name?: string })?.name ?? '';
       if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
         showTimedFeedback('error', t.voiceMicNotFound);
       } else {
-        showTimedFeedback('error', t.voiceMicDenied);
+        const inIframe = typeof window !== 'undefined' && window.self !== window.top;
+        if (inIframe) {
+          showTimedFeedback('error', t.voiceIframeDenied, true);
+        } else {
+          showTimedFeedback('error', t.voiceMicDenied);
+        }
       }
       return;
     }
@@ -1018,6 +1069,28 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
           recordChunksRef.current.push(evt.data);
         }
       };
+
+      recorder.onerror = () => {
+        cancelledRecordRef.current = true;
+        cleanupRecordingResources();
+        setRecordingState('idle');
+        setRecordSeconds(0);
+        showTimedFeedback('error', t.voiceUploadFailed);
+      };
+
+      const audioTrack = stream.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.onended = () => {
+          if (mediaRecorderRef.current === recorder && recorder.state === 'recording') {
+            try {
+              recorder.stop();
+            } catch {
+              cleanupRecordingResources();
+              setRecordingState('idle');
+            }
+          }
+        };
+      }
 
       recorder.onstop = () => {
         const wasCancelled = cancelledRecordRef.current;
@@ -1071,11 +1144,17 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state === 'recording') {
       try {
-        recorder.requestData();
+        recorder.stop();
       } catch {
-        // ignore if unsupported before stop
+        cleanupRecordingResources();
+        setRecordingState('idle');
+        setRecordSeconds(0);
+        showTimedFeedback('error', t.voiceUploadFailed);
       }
-      recorder.stop();
+    } else {
+      cleanupRecordingResources();
+      setRecordingState('idle');
+      setRecordSeconds(0);
     }
   };
 
@@ -1148,11 +1227,16 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
             {!props.voiceJoined ? (
               <button
                 type="button"
+                disabled={props.voiceStatus === 'joining'}
                 onClick={props.onJoinVoice}
-                className="min-h-[38px] px-3.5 rounded-xl bg-[#EEF3EC] hover:bg-[#E1EBDD] border border-[#B9CEB3] text-[#355432] text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap"
+                className="min-h-[38px] px-3.5 rounded-xl bg-[#EEF3EC] hover:bg-[#E1EBDD] border border-[#B9CEB3] text-[#355432] text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap disabled:opacity-60"
               >
-                <Mic className="w-3.5 h-3.5" />
-                <span>{t.joinVoiceBtn}</span>
+                {props.voiceStatus === 'joining' ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Mic className="w-3.5 h-3.5" />
+                )}
+                <span>{props.voiceStatus === 'joining' ? t.voiceStatusJoining : t.joinVoiceBtn}</span>
               </button>
             ) : (
               <>
@@ -1173,6 +1257,21 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
                     <Mic className="w-3.5 h-3.5" />
                   )}
                   <span>{props.micMuted ? t.unmuteMicBtn : t.muteMicBtn}</span>
+                  {!props.micMuted && (
+                    <span className="inline-flex items-end gap-0.5 h-3 ms-0.5" aria-hidden="true">
+                      {[18, 42, 70].map((thresh, idx) => (
+                        <span
+                          key={idx}
+                          className={`w-0.5 rounded-full transition-all duration-100 ${
+                            (props.localMicLevel ?? 0) >= thresh
+                              ? 'bg-[#D7BD7B]'
+                              : 'bg-white/30'
+                          }`}
+                          style={{ height: `${5 + idx * 3}px` }}
+                        />
+                      ))}
+                    </span>
+                  )}
                 </button>
 
                 <button
@@ -1183,6 +1282,42 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
                   <PhoneOff className="w-3.5 h-3.5" />
                   <span>{t.leaveVoiceBtn}</span>
                 </button>
+
+                {props.voiceStatus && props.voiceStatus !== 'idle' && (
+                  <span
+                    className={`px-2 py-1 rounded-lg text-[11px] font-bold border whitespace-nowrap ${
+                      props.voiceStatus === 'connected'
+                        ? 'bg-[#EEF3EC] border-[#B9CEB3] text-[#355432]'
+                        : props.voiceStatus === 'failed'
+                          ? 'bg-[#F9EAE6] border-[#C88172] text-[#9B3B30]'
+                          : 'bg-[#FBF5E4] border-[#D7BD7B] text-[#7D5D18]'
+                    }`}
+                  >
+                    {props.voiceStatus === 'connected'
+                      ? `${t.voiceStatusConnected} (${props.connectedPeersCount ?? 1})`
+                      : props.voiceStatus === 'connecting'
+                        ? t.voiceStatusConnecting
+                        : props.voiceStatus === 'reconnecting'
+                          ? t.voiceStatusReconnecting
+                          : props.voiceStatus === 'failed'
+                            ? t.voiceStatusFailed
+                            : props.voiceStatus === 'joining'
+                              ? t.voiceStatusJoining
+                              : t.voiceStatusWaitingPeers}
+                  </span>
+                )}
+
+                {(props.voiceStatus === 'failed' || props.voiceStatus === 'reconnecting') &&
+                  props.onReconnectVoice && (
+                    <button
+                      type="button"
+                      onClick={props.onReconnectVoice}
+                      className="min-h-[36px] px-2.5 rounded-xl bg-[#FBF5E4] hover:bg-[#F5E9C6] border border-[#D7BD7B] text-[#7D5D18] text-xs font-bold flex items-center gap-1 transition cursor-pointer whitespace-nowrap"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>{t.voiceReconnectBtn}</span>
+                    </button>
+                  )}
 
                 {props.voiceAudioBlocked && props.onUnlockVoiceAudio && (
                   <button
@@ -1230,13 +1365,28 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
         </button>
 
         {!isSinglePhone && props.voiceError && (
-          <p className="w-full text-xs text-[#9B3B30] font-bold pt-1">
-            {props.voiceError === 'permission_denied'
-              ? t.voicePermissionDenied
-              : props.voiceError === 'no_mic_device'
-                ? t.voiceMicNotFound
-                : t.voiceNotSupported}
-          </p>
+          <div className="w-full pt-1 flex flex-wrap items-center justify-between gap-2 text-xs text-[#9B3B30] font-bold">
+            <span>
+              {props.voiceError === 'iframe_permission_denied'
+                ? t.voiceIframeDenied
+                : props.voiceError === 'permission_denied'
+                  ? t.voicePermissionDenied
+                  : props.voiceError === 'no_mic_device'
+                    ? t.voiceMicNotFound
+                    : t.voiceNotSupported}
+            </span>
+            {props.voiceError === 'iframe_permission_denied' && typeof window !== 'undefined' && (
+              <a
+                href={window.location.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#231A15] text-[#FBF7F0] text-[11px] font-extrabold hover:bg-[#3A2C24]"
+              >
+                <ExternalLink className="w-3 h-3" />
+                <span>{t.voiceOpenNewTabBtn}</span>
+              </a>
+            )}
+          </div>
         )}
       </div>
 
@@ -1359,7 +1509,7 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
               {/* Status / Upload Feedback Toast */}
               {chatFeedback && (
                 <div
-                  className={`mx-4 mt-2.5 px-3 py-2 rounded-xl text-xs font-bold border ${
+                  className={`mx-4 mt-2.5 px-3 py-2 rounded-xl text-xs font-bold border flex flex-wrap items-center justify-between gap-2 ${
                     chatFeedback.type === 'error'
                       ? 'bg-[#F9EAE6] border-[#C88172] text-[#9B3B30]'
                       : chatFeedback.type === 'success'
@@ -1367,7 +1517,18 @@ export const RoomChatVoicePanel: React.FC<RoomChatVoicePanelProps> = (props) => 
                         : 'bg-[#F3EBDD] border-[#D5C7B2] text-[#5E4F43]'
                   }`}
                 >
-                  {chatFeedback.text}
+                  <span>{chatFeedback.text}</span>
+                  {chatFeedback.isIframeMicBlocked && typeof window !== 'undefined' && (
+                    <a
+                      href={window.location.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#231A15] text-[#FBF7F0] text-[11px] font-extrabold hover:bg-[#3A2C24]"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      <span>{t.voiceOpenNewTabBtn}</span>
+                    </a>
+                  )}
                 </div>
               )}
 

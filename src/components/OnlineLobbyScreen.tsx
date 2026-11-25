@@ -48,6 +48,8 @@ export const OnlineLobbyScreen: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState('');
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
   const lastClampedRef = useRef<string | null>(null);
+  const tRef = useRef(t);
+  tRef.current = t;
 
   const voice = useVoiceChat();
   const { setVoiceRoomMeta, clearVoiceRoomMeta } = voice;
@@ -94,7 +96,7 @@ export const OnlineLobbyScreen: React.FC = () => {
       },
       (err) => {
         setLoading(false);
-        setErrorMsg(formatMultiplayerError(err, t));
+        setErrorMsg(formatMultiplayerError(err, tRef.current));
       }
     );
 
@@ -121,7 +123,7 @@ export const OnlineLobbyScreen: React.FC = () => {
       document.removeEventListener('visibilitychange', handleVis);
       window.removeEventListener('pagehide', handleUnload);
     };
-  }, [activeRoomCode, authUser, clearVoiceRoomMeta, setActiveRoomCode, setScreen, t]);
+  }, [activeRoomCode, authUser, clearVoiceRoomMeta, setActiveRoomCode, setScreen]);
 
   // Auto-clamp host roundsCount whenever players join so players x rounds <= 63
   useEffect(() => {
@@ -132,12 +134,12 @@ export const OnlineLobbyScreen: React.FC = () => {
       if (lastClampedRef.current === clampKey) return;
       lastClampedRef.current = clampKey;
       void updateLobbySettings(room.roomCode, { roundsCount: maxRounds }).catch((err) =>
-        setErrorMsg(formatMultiplayerError(err, t))
+        setErrorMsg(formatMultiplayerError(err, tRef.current))
       );
     } else {
       lastClampedRef.current = null;
     }
-  }, [room, authUser, t]);
+  }, [room, authUser]);
 
   if (loading || !room) {
     return (
@@ -269,11 +271,15 @@ export const OnlineLobbyScreen: React.FC = () => {
         voiceJoined={voice.voiceJoined}
         micMuted={voice.micMuted}
         voiceError={voice.voiceError}
+        voiceStatus={voice.voiceStatus}
+        connectedPeersCount={voice.connectedPeersCount}
+        localMicLevel={voice.localMicLevel}
         voiceAudioBlocked={voice.audioBlocked}
         speakingUids={voice.speakingUids}
         onJoinVoice={() => void voice.joinVoice()}
         onLeaveVoice={() => void voice.leaveVoice()}
         onToggleMute={() => void voice.toggleMute()}
+        onReconnectVoice={() => void voice.reconnectVoice()}
         onUnlockVoiceAudio={voice.unlockAudio}
       />
 

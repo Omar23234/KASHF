@@ -213,6 +213,7 @@ interface MobileChatModalProps {
   spState: SinglePhoneChatStoreState;
   onUpdateSpState: (updater: (prev: SinglePhoneChatStoreState) => SinglePhoneChatStoreState) => void;
   onHapticTap: () => void;
+  voiceJoined?: boolean;
 }
 
 export const MobileChatModal: React.FC<MobileChatModalProps> = ({
@@ -235,6 +236,7 @@ export const MobileChatModal: React.FC<MobileChatModalProps> = ({
   spState,
   onUpdateSpState,
   onHapticTap,
+  voiceJoined = false,
 }) => {
   const isSinglePhone = mode === 'single_phone';
   const isRTL = language === 'ar';
@@ -501,7 +503,7 @@ export const MobileChatModal: React.FC<MobileChatModalProps> = ({
       }));
     }
     return onlineMessages
-      .filter((m) => m.messageType === 'text' || m.messageType === 'voice')
+      .filter((m) => !m.messageType || m.messageType === 'text' || m.messageType === 'voice')
       .map((m) => ({
         id: m.id,
         senderId: m.senderId,
@@ -566,8 +568,8 @@ export const MobileChatModal: React.FC<MobileChatModalProps> = ({
     }
     return {
       replyToMessageId: m.id,
-      replyToSenderName: m.senderName,
-      replyToPreviewText: previewText.slice(0, 140),
+      replyToSenderName: Array.from(m.senderName.trim()).slice(0, 24).join('') || 'Player',
+      replyToPreviewText: Array.from(previewText.trim()).slice(0, 140).join('') || '...',
       replyToType: m.messageType,
     };
   };
@@ -679,6 +681,10 @@ export const MobileChatModal: React.FC<MobileChatModalProps> = ({
     if (isRecording || sendingVoice || voiceSendingRef.current) return;
     onHapticTap();
     setFeedback(null);
+    if (voiceJoined && Platform.OS !== 'web') {
+      showTimedFeedback('info', t.voiceBusyWithCallHint);
+      return;
+    }
     await stopActiveSound();
 
     try {
@@ -837,6 +843,10 @@ export const MobileChatModal: React.FC<MobileChatModalProps> = ({
   const handleSendText = async () => {
     const clean = draft.trim();
     if (!clean || sending) return;
+    if (!isSinglePhone && (!roomCode || !myUid)) {
+      showTimedFeedback('error', t.anonAuthRequiredTitle);
+      return;
+    }
     onHapticTap();
     setSending(true);
     const prevDraft = draft;
@@ -1342,6 +1352,10 @@ export const MobileChatModal: React.FC<MobileChatModalProps> = ({
                 value={draft}
                 onChangeText={setDraft}
                 maxLength={500}
+                returnKeyType="send"
+                onSubmitEditing={() => {
+                  if (draft.trim()) void handleSendText();
+                }}
                 placeholder={t.chatPlaceholder}
                 placeholderTextColor="#9C8D7E"
                 style={[styles.input, dirText]}

@@ -83,6 +83,15 @@ export const AvatarPickerModal: React.FC<AvatarPickerModalProps> = ({
               <Text style={styles.previewName}>
                 {playerName.trim() || t.yourNamePlaceholder}
               </Text>
+              {(() => {
+                const ch = AVATAR_CHARACTERS.find((c) => c.id === selectedChar);
+                if (!ch) return null;
+                return (
+                  <Text style={styles.previewCharLabel}>
+                    {ch.emoji} {isRTL ? ch.labelAr : ch.labelEn}
+                  </Text>
+                );
+              })()}
             </View>
 
             <Text style={[styles.sectionLabel, dirText]}>{t.avatarCharacterLabel}</Text>
@@ -203,6 +212,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '800',
     color: '#231A15',
+  },
+  previewCharLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#8B5E3C',
   },
   sectionLabel: {
     fontSize: 12,

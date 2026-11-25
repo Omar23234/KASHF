@@ -1,5 +1,9 @@
 import React, { createContext, useCallback, useContext, useState } from 'react';
-import { useWebRTCVoiceChat, type VoiceErrorType } from '../hooks/useWebRTCVoiceChat';
+import {
+  useWebRTCVoiceChat,
+  type VoiceConnectionStatus,
+  type VoiceErrorType,
+} from '../hooks/useWebRTCVoiceChat';
 import type { RoomPlayerDoc } from '../types/game';
 
 export interface VoiceRoomMeta {
@@ -13,11 +17,15 @@ export interface VoiceContextValue {
   voiceJoined: boolean;
   micMuted: boolean;
   voiceError: VoiceErrorType;
+  voiceStatus: VoiceConnectionStatus;
+  connectedPeersCount: number;
+  localMicLevel: number;
   audioBlocked: boolean;
   speakingUids: Record<string, boolean>;
   joinVoice: () => Promise<void>;
   leaveVoice: () => Promise<void>;
   toggleMute: () => Promise<void>;
+  reconnectVoice: () => Promise<void>;
   unlockAudio: () => void;
   setVoiceRoomMeta: (meta: VoiceRoomMeta) => void;
   clearVoiceRoomMeta: () => void;
